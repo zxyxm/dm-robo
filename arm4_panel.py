@@ -4,6 +4,10 @@ from queue import Empty, SimpleQueue
 from threading import Event, Thread
 import time
 import argparse
+import sys
+
+if sys.platform == "win32":
+    from arm_window_dock import dock
 import tkinter as tk
 from tkinter import ttk, font
 
@@ -157,6 +161,7 @@ class Panel:
             home = min(central,key=apex_distance)
             for (slider,_),q in zip(self.rows,np.degrees(home)):
                 slider.set(float((q+180)%360-180))
+        self.next_dock = 0.
         self.t0 = time.monotonic()
         self.open_view()
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -326,6 +331,7 @@ class Panel:
 
     def open_view(self):
         if self.view is None or not self.view.is_running():
+            self.next_dock = 0.
             self.view = viewer.launch_passive(self.model, self.data)
             self.view.cam.lookat[:] = [.25,.25,.14] if self.ultrasound else [0, 0, .16]
             self.view.cam.distance = 1.12 if self.ultrasound else .72
@@ -424,6 +430,9 @@ class Panel:
             if not self.ink or self.ink[-1] is None or np.linalg.norm(point-self.ink[-1]) >= .0008:
                 self.ink.append(point)
         if self.view and self.view.is_running():
+            if sys.platform == "win32" and time.monotonic() >= self.next_dock:
+                dock(self.root)
+                self.next_dock = time.monotonic() + .15
             with self.view.lock():
                 scene = self.view.user_scn
                 draw_ink(scene, self.ink, radius=.00045 if self.ultrasound else .001)
