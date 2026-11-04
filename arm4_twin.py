@@ -13,16 +13,20 @@ from arm4_fk import load_model
 from dm_debug import CanBus, Joint, U2Can, ids, move
 
 
-def read_positions(bus, joints):
-    positions = []
+def read_feedback(bus, joints):
+    samples = []
     for idx, joint in enumerate(joints, 1):
         if not joint.limits:
             joint.probe(bus)
-        status, pos, *_ = joint.status(bus)
+        status, pos, vel, torque, *_ = joint.status(bus)
         if status not in (0, 1):
             raise RuntimeError(f"J{idx} fault 0x{status:X}")
-        positions.append(pos)
-    return np.array(positions)
+        samples.append((pos,vel,torque))
+    return np.array(samples).T
+
+
+def read_positions(bus, joints):
+    return read_feedback(bus,joints)[0]
 
 
 def update_pose(model, data, measured, zero, signs):

@@ -22,7 +22,8 @@ from arm4_fk import load_model
 from arm5_motion import motion_frames
 from arm5_guides import guides, draw_coordinates
 from arm5_scan import AXES, CENTER, ROOT, Workspace, load_passes, surface_runs, surface_start
-from arm4_twin import read_positions, update_pose
+from arm5_force import ProbeControl, contact, estimate_force, jacobians
+from arm4_twin import read_feedback, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
 
 
@@ -32,8 +33,8 @@ def stream(stop, events, interface, channel, rate, slaves, masters, zero, signs)
         with closing(bus):
             joints = [Joint(s, m) for s, m in zip(slaves, masters)]
             while not stop.is_set():
-                values = read_positions(bus, joints)
-                events.put(("sample", signs * (values - zero)))
+                pos,vel,tau = read_feedback(bus,joints)
+                events.put(("sample",(signs*(pos-zero),signs*vel,signs*tau,time.monotonic())))
                 stop.wait(.04)
     except Exception as exc:
         events.put(("error", str(exc)))
@@ -84,6 +85,25 @@ class Panel:
         tabs.add(controls,text="扫查操作" if ultrasound else "写字操作")
         tabs.add(joints,text="六轴角度")
         tabs.add(hardware,text="CAN 设置")
+        if ultrasound:
+            forces = ttk.Frame(tabs,padding=8)
+            tabs.add(forces,text="力控 / 力矩")
+            self.load_text = tk.StringVar()
+            self.force_on = tk.BooleanVar(value=False)
+            self.force_goal = tk.DoubleVar(value=2.)
+            self.force_widget = ttk.Checkbutton(forces,text="仿真法向恒力（起点就位后生效）",variable=self.force_on)
+            self.force_widget.pack(anchor="w")
+            ttk.Label(forces,text="仿真目标法向力 (N)").pack(anchor="w")
+            self.goal_widget = ttk.Combobox(forces,textvariable=self.force_goal,values=(0,1,2,3,4,5),state="readonly",width=6)
+            self.goal_widget.pack(anchor="w")
+            self.zero_btn = ttk.Button(forces,text="实机空载静止时置零",command=self.zero_force)
+            self.zero_btn.pack(anchor="w",pady=4)
+            ttk.Label(forces,textvariable=self.load_text,justify="left").pack(anchor="w")
+            self.force_control = ProbeControl()
+            self.tau = None
+            self.feedback_at = 0.
+            self.force_bias = np.zeros(6)
+            self.zeroed = False
         self.settings = ttk.LabelFrame(hardware, text="CAN 连接与标定", padding=8)
         self.settings.pack(fill="x")
         self.fields = {}
@@ -404,6 +424,11 @@ class Panel:
         self.cancel_plan.set()
         if self.ultrasound:
             self.invalidate_scan()
+        if self.ultrasound:
+            self.force_on.set(False)
+            self.tau = None
+            self.force_bias[:] = 0.
+            self.zeroed = False
         self.mode = "hardware"
         self.running.set(False)
         self.status.set("连接中 · 等待六轴有效反馈")
@@ -424,6 +449,48 @@ class Panel:
         self.play.state(["!disabled"])
         self.status.set("仿真模式 · 滑块只控制模型")
 
+    def fresh_static(self):
+        return (self.mode=="hardware" and self.tau is not None and
+                time.monotonic()-self.feedback_at < .5 and np.max(abs(self.velocity)) < .08)
+
+    def zero_force(self):
+        if self.fresh_static():
+            self.force_bias = self.data.qfrc_bias.copy()-self.tau
+            self.zeroed = True
+
+    def display_forces(self):
+        sim = self.mode=="sim"
+        self.force_widget.state(["!disabled" if sim else "disabled"])
+        self.goal_widget.state(["!disabled" if sim else "disabled"])
+        self.zero_btn.state(["!disabled" if self.fresh_static() else "disabled"])
+        linear,_ = jacobians(self.model,self.data)
+        force = None
+        if sim:
+            normal,magnitude = contact(self.data.site("acoustic").xpos)
+            force = normal*magnitude
+            tau = self.data.qfrc_bias-linear.T@force
+            source = "仿真 · 准静态力矩 / 弹性接触模型"
+        elif self.mode=="hardware" and self.tau is not None and time.monotonic()-self.feedback_at < .5:
+            tau = self.tau
+            source = "CAN 电机反馈 · 末端力准静态估算"
+            if self.fresh_static():
+                force = estimate_force(linear,self.data.qfrc_bias,tau,self.force_bias)
+                source += "（已置零）" if self.zeroed else "（未置零）"
+        else:
+            self.load_text.set("等待新鲜的六轴反馈")
+            return
+        lines = [source,"关节力矩（N·m）"]
+        lines.extend("     ".join(f"J{i+1}  {tau[i]:+.2f}" for i in row) for row in ((0,1,2),(3,4,5)))
+        if force is None:
+            lines.append("末端力不可估 · 关节运动或姿态接近奇异")
+        else:
+            lines += ["盒坐标 · 环境作用于探头（N）",
+                      "   ".join(f"F{k} {v:+.2f}" for k,v in zip("xyz",force)),
+                      f"合力 {np.linalg.norm(force):.2f} N"]
+            if sim:
+                lines.append(f"仿真法向接触力 {magnitude:.2f} N")
+        self.load_text.set("\n".join(lines))
+
     def tick(self):
         while True:
             try:
@@ -438,7 +505,7 @@ class Panel:
                     self.mode = "offline"
                     self.status.set(f"硬件离线 · 视图已冻结。{value}")
                 else:
-                    self.q = value
+                    self.q,self.velocity,self.tau,self.feedback_at = value
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
         if self.ultrasound:
             self.init_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
@@ -462,6 +529,11 @@ class Panel:
         elif self.mode == "sim":
             t = time.monotonic() - self.t0
             self.q = np.radians([28,18,25,20,18,40]) * np.sin(t*np.array([.6,.42,.55,.73,.8,.95]))
+        if self.ultrasound:
+            if self.mode=="sim" and self.track is not None and self.force_on.get():
+                self.q = self.force_control.correct(self.model,self.data,self.q,self.force_goal.get(),.025)
+            else:
+                self.force_control.offset = self.force_control.previous_force = 0.
         for (scale, label), angle in zip(self.rows, np.degrees(self.q)):
             scale.state(["!disabled" if manual else "disabled"])
             if not manual:
@@ -469,6 +541,7 @@ class Panel:
             label.configure(text=f"{angle: .1f}°")
         xyz, rpy = update_pose(self.model, self.data, self.q, 0, 1)
         if self.ultrasound:
+            self.display_forces()
             site = self.data.site("acoustic")
             xyz = site.xpos * 1000
             rpy = Rotation.from_matrix(site.xmat.reshape(3,3)).as_euler("xyz",degrees=True)
