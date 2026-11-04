@@ -16,7 +16,7 @@ from serial.tools.list_ports import comports
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
 from arm5_guides import guides, draw_coordinates
-from arm5_scan import AXES, CENTER, ROOT, load_passes, parallel_sections
+from arm5_scan import AXES, CENTER, ROOT, Workspace, load_passes, parallel_sections, surface_runs, surface_start
 from arm4_twin import read_positions, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
 
@@ -108,6 +108,14 @@ class Panel:
             self.grid_btn.grid(row=1,column=3)
             ttk.Label(tools,textvariable=self.slice_label).grid(row=2,column=0,columnspan=3,sticky="w")
             ttk.Checkbutton(tools,text="断面网格",variable=self.show_guides).grid(row=2,column=3)
+            self.coords = [tk.StringVar(value=v) for v in ("250","250","50")]
+            self.extents = [tk.StringVar(value="180") for _ in range(2)]
+            fields = ttk.Frame(tools)
+            fields.grid(row=3,column=0,columnspan=4,sticky="w")
+            for i,(label,var) in enumerate(zip(("X","Y","Z","左弧°","右弧°"),self.coords+self.extents)):
+                ttk.Label(fields,text=label).grid(row=0,column=2*i)
+                ttk.Entry(fields,textvariable=var,width=5).grid(row=0,column=2*i+1)
+            ttk.Button(tools,text="贴合起点 (mm)",command=self.apply_start).grid(row=4,column=0,columnspan=2)
             self.select_slice(1)
             self.multi_btn = ttk.Button(outer, text="按当前探头角度 · 扫多个切面", command=self.start_parallel)
             self.multi_btn.pack(anchor="w")
@@ -136,6 +144,9 @@ class Panel:
     def select_slice(self, axis):
         self.slice_axis = axis
         label, coordinate = ("YZ", "X") if axis == 0 else ("XZ", "Y")
+        if hasattr(self,"coords"):
+            self.coords[axis].set(f"{self.position_mm[axis]:g}")
+            self.apply_start()
         self.slice_label.set(f"{label} 断面   {coordinate} = {self.position_mm[axis]:g} mm")
 
     def shift_slice(self, sign):
@@ -147,15 +158,53 @@ class Panel:
         self.position_mm[axis] = value
         self.select_slice(axis)
 
+    def apply_start(self):
+        try:
+            point,angle = surface_start(self.slice_axis,[float(v.get()) for v in self.coords])
+        except ValueError as exc:
+            self.status.set(f"起点无效 · {exc}")
+            return None
+        self.start_mm = point
+        self.position_mm[self.slice_axis] = point[self.slice_axis]
+        for var,value in zip(self.coords,point):
+            var.set(f"{value:.4f}".rstrip("0").rstrip(".") or "0")
+        self.slice_label.set(f"{('YZ','XZ')[self.slice_axis]} 断面   {'XY'[self.slice_axis]} = {point[self.slice_axis]:g} mm")
+        self.status.set("绿色标记为曲面起点 · 扫描时检查可达性")
+        return angle
+
+    def selected_frames(self,axis,position,angle,left,right,offsets):
+        work = Workspace(self.model)
+        completed = 0
+        for offset in offsets:
+            seen = False
+            for poses in surface_runs(work,axis,position+offset,angle,left,right,self.q.copy()):
+                seen = True
+                self.ink.append(None)
+                self.status.set(f"仿真扫查 · {'XY'[axis]} = {position+offset:g} mm · 分段定位")
+                for q in poses:
+                    yield q, True
+            completed += int(seen)
+        self.finished_message = f"有可达采样点的断面 {completed}/{len(offsets)} · 已播放各可达段"
+
     def start_selected(self, multiple):
         if self.mode != "sim":
+            return
+        angle = self.apply_start()
+        if angle is None:
+            return
+        try:
+            left,right = [float(v.get()) for v in self.extents]
+            if not (0 <= left <= 180 and 0 <= right <= 180):
+                raise ValueError
+        except ValueError:
+            self.status.set("左右弧范围应为 0 至 180 度")
             return
         offsets = (0,2,4,6,8,-2,-4,-6,-8) if multiple else (0,)
         offsets = tuple(v*float(self.spacing.get())/2 for v in offsets)
         self.ink.clear()
         self.open_view()
         self.running.set(False)
-        self.writing = self.parallel_frames(self.q.copy(), (self.slice_axis,self.position_mm[self.slice_axis]), offsets)
+        self.writing = self.selected_frames(self.slice_axis,self.position_mm[self.slice_axis],angle,left,right,offsets)
 
     def start_parallel(self):
         if self.mode != "sim":
@@ -301,6 +350,10 @@ class Panel:
             rpy = Rotation.from_matrix(site.xmat.reshape(3,3)).as_euler("xyz",degrees=True)
         self.pose.set(("探头中心 XYZ (mm)   " if self.ultrasound else "XYZ (mm)   ") + "   ".join(f"{v:.2f}" for v in xyz) +
                       "\nRPY (°)       " + "   ".join(f"{v:.2f}" for v in rpy))
+        if self.ultrasound:
+            base = self.data.body("mount")
+            local = base.xmat.reshape(3,3).T @ (site.xpos-base.xpos) * 1000
+            self.pose.set(self.pose.get()+"\n基座 XYZ (mm)   "+"   ".join(f"{v:.2f}" for v in local))
         if ink:
             self.ink.append(self.data.site("acoustic" if self.ultrasound else "pen_tip").xpos.copy())
         if self.view and self.view.is_running():
@@ -309,7 +362,7 @@ class Panel:
                 draw_ink(scene, self.ink, radius=.00045 if self.ultrasound else .001)
                 if self.ultrasound:
                     lines = guides(self.slice_axis, self.position_mm[self.slice_axis],float(self.spacing.get())) if self.show_guides.get() else ()
-                    draw_coordinates(scene, lines)
+                    draw_coordinates(scene, lines, self.data.body("mount"), getattr(self,"start_mm",None))
                 if self.ultrasound and ink and scene.ngeom < scene.maxgeom:
                     beam = scene.geoms[scene.ngeom]
                     mujoco.mjv_initGeom(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),

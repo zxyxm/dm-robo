@@ -28,21 +28,27 @@ def guides(axis, position, spacing):
     return lines
 
 
-def draw_coordinates(scene, lines):
+def draw_coordinates(scene, lines, base=None, start=None):
     def geom(kind, pos, color):
         g = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(g,kind,np.zeros(3),pos,np.eye(3).ravel(),np.asarray(color,np.float32))
         scene.ngeom += 1
         return g
 
-    origin = np.zeros(3)
-    for direction, color, label in zip(np.eye(3), ([.88,.08,.06,1],[.05,.65,.16,1],[.12,.34,.95,1]), "XYZ"):
-        if scene.ngeom+2 > scene.maxgeom:
-            return
-        end = direction*.085
-        arrow = geom(mujoco.mjtGeom.mjGEOM_ARROW,origin,color)
-        mujoco.mjv_makeConnector(arrow,mujoco.mjtGeom.mjGEOM_ARROW,.003,*origin,*end)
-        geom(mujoco.mjtGeom.mjGEOM_LABEL,end+direction*.013,color).label = "+"+label
+    frames = [(np.zeros(3), np.eye(3), "+", .085)]
+    if base is not None:
+        frames.append((base.xpos, base.xmat.reshape(3,3), "B", .065))
+    for origin, rotation, prefix, length in frames:
+        for direction, color, label in zip(rotation.T, ([.88,.08,.06,1],[.05,.65,.16,1],[.12,.34,.95,1]), "XYZ"):
+            if scene.ngeom+2 > scene.maxgeom:
+                return
+            end = origin + direction*length
+            arrow = geom(mujoco.mjtGeom.mjGEOM_ARROW,origin,color)
+            mujoco.mjv_makeConnector(arrow,mujoco.mjtGeom.mjGEOM_ARROW,.003,*origin,*end)
+            geom(mujoco.mjtGeom.mjGEOM_LABEL,end+direction*.013,color).label = prefix+label
+    if start is not None and scene.ngeom < scene.maxgeom:
+        marker = geom(mujoco.mjtGeom.mjGEOM_SPHERE,start/1000,[.1,.9,.22,1])
+        marker.size[0] = .0025
     for a,b,radius,color in lines:
         if scene.ngeom >= scene.maxgeom:
             break

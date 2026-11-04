@@ -298,3 +298,58 @@ def parallel_sections(model, initial_q, *, plane=None, offsets=(0, 2, 4, 6, 8, -
         if best:
             previous = best[-1]
         yield offset,best
+
+
+def surface_start(axis, xyz_mm):
+    """Radially project in normalized slice coordinates, preserving the slice offset."""
+    xyz = np.asarray(xyz_mm, dtype=float) / 1000
+    if xyz.shape != (3,) or not np.all(np.isfinite(xyz)) or xyz[2] < 0:
+        raise ValueError("起点需要三个有限坐标，Z 必须大于或等于零")
+    unit = (xyz - CENTER) / AXES
+    if abs(unit[axis]) >= 1:
+        raise ValueError("所选断面超出半椭球，或已退化为一点")
+    horizontal = 1-axis
+    angle = np.arctan2(unit[2], unit[horizontal]) if np.hypot(unit[2],unit[horizontal]) > 1e-12 else np.pi/2
+    scale = np.sqrt(1-unit[axis]**2)
+    unit[[horizontal,2]] = scale*np.array([np.cos(angle),np.sin(angle)])
+    return (CENTER + AXES*unit)*1000, np.degrees(angle)
+
+
+def surface_runs(work, axis, position, start_angle, left, right, initial):
+    """Two sweeps from the requested start, splitting at gaps and branch changes."""
+    fixed = (position/1000-CENTER[axis])/AXES[axis]
+    if abs(fixed) >= 1:
+        return
+    lateral = np.eye(3)[axis]
+    ends = dict.fromkeys((max(0.,start_angle-right), min(180.,start_angle+left)))
+    for end in ends:
+        count = int(np.ceil(abs(end-start_angle)/2))
+        if not count and len(ends) > 1:
+            continue
+        run = []
+        for angle in np.linspace(start_angle,end,count+1):
+            t = np.radians(angle)
+            unit = lateral*fixed
+            unit[[1-axis,2]] = np.sqrt(1-fixed**2)*np.array([np.cos(t),np.sin(t)])
+            target = CENTER + AXES*unit
+            beam = -unit/AXES
+            beam[axis] = 0
+            beam /= np.linalg.norm(beam)
+            frame = np.column_stack((np.cross(lateral,beam), lateral, beam))
+            ref = run[-1] if run else initial
+            choices = []
+            for rotation in (frame, frame @ np.diag([-1,-1,1])):
+                for q in work.solutions(target,rotation):
+                    delta = (q-ref+np.pi)%(2*np.pi)-np.pi
+                    choices.append((np.linalg.norm(delta),ref+delta,rotation))
+            found = next((q for _,q,r in sorted(choices,key=lambda item:item[0])
+                          if work.feasible(q,target,r)),None)
+            if run and (found is None or np.max(np.abs(found-ref)) > .35):
+                yield run
+                run = []
+            if found is not None:
+                run.append(found)
+        if run:
+            yield run
+        if not (left or right):
+            break
