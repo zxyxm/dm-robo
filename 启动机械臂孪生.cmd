@@ -7,7 +7,7 @@ if not exist "%PYTHON_EXE%" (
     exit /b 1
 )
 if not "%~1"=="" goto arguments
-"%PYTHON_EXE%" "%~dp0arm4_twin.py" --demo
+"%PYTHON_EXE%" "%~dp0arm4_panel.py"
 set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" pause
 exit /b %RESULT%
