@@ -9,7 +9,7 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from arm4_fk import MODEL
+from arm4_fk import load_model
 from dm_debug import CanBus, Joint, U2Can, ids, move
 
 
@@ -71,7 +71,7 @@ def main():
     if not np.isfinite(zero).all() or (args.frames is not None and args.frames < 1):
         parser.error("invalid zero or frame count")
 
-    model = mujoco.MjModel.from_xml_string(MODEL.read_text(encoding="utf-8"))
+    model = load_model()
     data = mujoco.MjData(model)
     joints = [Joint(s, m) for s, m in zip(args.ids, args.masters)]
     signs = np.array(args.signs)

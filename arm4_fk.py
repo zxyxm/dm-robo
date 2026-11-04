@@ -10,6 +10,13 @@ from scipy.spatial.transform import Rotation
 MODEL = Path(__file__).with_name("arm4.xml")
 
 
+def load_model():
+    xml = MODEL.read_text(encoding="utf-8")
+    meshes = ET.fromstring(xml).findall("./asset/mesh")
+    assets = {Path(m.get("file")).name: (MODEL.parent / m.get("file")).read_bytes() for m in meshes}
+    return mujoco.MjModel.from_xml_string(xml, assets=assets)
+
+
 def reference_fk(angles):
     """Product of rotations around the home-pose axes, in the base frame."""
     tree = ET.parse(MODEL)
@@ -37,7 +44,7 @@ def main():
     if len(args.angles) not in (0, 6):
         parser.error("supply six joint angles, or omit all six for CAD home")
     angles = np.deg2rad(args.angles or [0] * 6)
-    model = mujoco.MjModel.from_xml_string(MODEL.read_text(encoding="utf-8"))
+    model = load_model()
     data = mujoco.MjData(model)
     data.qpos[:] = angles
     mujoco.mj_forward(model, data)
