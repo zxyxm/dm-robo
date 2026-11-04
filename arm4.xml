@@ -1,10 +1,14 @@
 <?xml version='1.0' encoding='utf-8'?>
 <mujoco model="Assembly 4 - kinematic linkage">
   <compiler angle="radian" />
+  <visual>
+    <headlight ambient=".60 .61 .63" diffuse=".34 .34 .34" specular=".22 .22 .22" />
+  </visual>
   <asset>
-    <texture name="studio_background" type="skybox" builtin="flat" rgb1=".863 .890 .910" width="64" height="384" />
-    <material name="al5052" rgba=".72 .75 .78 1" />
-    <material name="carbon_laminate" rgba=".13 .14 .15 1" />
+    <texture name="studio_background" type="skybox" builtin="gradient" rgb1=".83 .87 .93" rgb2=".98 .985 .995" width="64" height="384" />
+    <material name="al5052" rgba=".77 .79 .82 1" specular=".55" shininess=".40" />
+    <material name="carbon_laminate" rgba=".31 .33 .36 1" specular=".18" shininess=".3" />
+    <material name="anodized_case" rgba=".43 .46 .50 1" specular=".48" shininess=".36" />
     <mesh name="bracket1" file="meshes/bracket1.stl" />
     <mesh name="arm_plate" file="meshes/arm_plate.stl" />
     <mesh name="bracket2" file="meshes/bracket2.stl" />
@@ -18,8 +22,10 @@
     <mesh name="dm3507_output" file="meshes/dm3507_output.stl" />
   </asset>
   <worldbody>
+    <light directional="true" pos=".4 -.4 .8" dir="-.5 .4 -.8" diffuse=".32 .31 .30" specular=".35 .34 .33" castshadow="false" />
+    <light directional="true" pos="-.4 .65 .4" dir=".4 -.8 -.45" diffuse=".20 .21 .23" specular=".16 .18 .20" castshadow="false" />
     <geom name="writing_board" type="box" pos="0 -.229 .24" size=".066 .003 .061" rgba=".94 .95 .92 1" />
-    <geom type="box" size=".15 .15 .005" pos="0 0 -.005" rgba=".35 .4 .45 1" />
+    <geom type="box" size=".15 .15 .005" pos="0 0 -.005" rgba=".65 .68 .72 1" />
     <body name="link1" pos="-1.41398004416e-15 -1.01607611214e-15 0.0665">
       <joint name="J1" type="hinge" axis="-1.5642807763e-16 -7.80232566933e-31 -1" />
       <geom type="mesh" mesh="bracket1" material="al5052" contype="0" conaffinity="0" />
@@ -38,7 +44,7 @@
               <body name="link6" pos="4.31299440606e-15 -0.077872722746 -0.00206132290596">
                 <joint name="J6" type="hinge" axis="-1.59668419547e-16 0.999649842696 0.0264611412832" />
                 <geom name="pen_grip" type="capsule" fromto="0 0 0 0 -.018 -.000477" size=".008" rgba=".14 .15 .17 1" mass="0" contype="0" conaffinity="0" />
-                <geom name="pen_barrel" type="capsule" fromto="0 -.018 -.000477 0 -.073 -.001932" size=".004" rgba=".13 .44 .72 1" mass="0" contype="0" conaffinity="0" />
+                <geom name="pen_barrel" type="capsule" fromto="0 -.018 -.000477 0 -.073 -.001932" size=".004" rgba=".10 .48 .91 1" mass="0" contype="0" conaffinity="0" />
                 <geom name="pen_nib" type="capsule" fromto="0 -.073 -.001932 0 -.07897 -.00209" size=".001" rgba=".08 .12 .2 1" mass="0" contype="0" conaffinity="0" />
                 <site name="flange" quat="0.697688633531 0.716401124121 5.65727189077e-17 5.63428301052e-17" size=".005" />
                 <site name="pen_tip" pos="0 -.07997 -.002117" size=".0002" rgba="0 0 0 0" />
@@ -47,24 +53,24 @@
               </body>
               <inertial pos="-0.01354230372 -0.01909752667 -0.0005055193629" mass="0.0791463981" fullinertia="5.66610459e-05 4.128371826e-05 5.280067857e-05 1.449371175e-05 3.836544947e-07 -3.05072418e-07" />
               <geom name="J5_output" type="mesh" mesh="dm4310_output" pos="-0.0205 -1.70502501007e-13 -2.12496686913e-13" quat="0.706358131454 -0.0325298344416 -0.0325298344416 -0.706358131454" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
-              <geom name="J6_case" type="mesh" mesh="dm3507_case" pos="4.31599200823e-15 -0.0778727227462 -0.00206132290618" quat="0.999912456842 0.0132317289889 1.625559312e-19 7.98433504084e-17" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+              <geom name="J6_case" type="mesh" mesh="dm3507_case" pos="4.31599200823e-15 -0.0778727227462 -0.00206132290618" quat="0.999912456842 0.0132317289889 1.625559312e-19 7.98433504084e-17" material="anodized_case" contype="0" conaffinity="0" mass="0" />
             </body>
             <inertial pos="0.01822740179 -0.03298713456 0.003044763404" mass="0.110129475" fullinertia="0.0001415919515 5.931273642e-05 0.000135946841 3.063619792e-05 -2.827768328e-06 7.134226649e-06" />
             <geom name="J4_output" type="mesh" mesh="dm4310_output" pos="0 -1.47999668076e-13 -2.11330952737e-13" quat="0.998941249395 -0.046004133049 3.38656626095e-18 -6.10578304256e-17" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
-            <geom name="J5_case" type="mesh" mesh="dm4310_case" pos="-0.0205 -0.0741846593418 0.00684735849545" quat="0.706358131454 -0.0325298344416 -0.0325298344416 -0.706358131454" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+            <geom name="J5_case" type="mesh" mesh="dm4310_case" pos="-0.0205 -0.0741846593418 0.00684735849545" quat="0.706358131454 -0.0325298344416 -0.0325298344416 -0.706358131454" material="anodized_case" contype="0" conaffinity="0" mass="0" />
           </body>
           <inertial pos="0.01617705366 -0.01983026211 0.001830363781" mass="0.0827934749" fullinertia="5.890412161e-05 4.693459929e-05 5.840239379e-05 -1.641675465e-05 1.515291779e-06 1.067590541e-06" />
           <geom name="J3_output" type="mesh" mesh="dm4340_output" pos="0.025 -1.96828664478e-13 -2.07084349668e-13" quat="0.123252158624 0.696282202411 -0.696282202411 0.123252158624" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
-          <geom name="J4_case" type="mesh" mesh="dm4310_case" pos="4.32293090213e-15 -0.0851380989761 0.00785837787065" quat="0.998941249395 -0.046004133049 3.38656626095e-18 -6.10578304256e-17" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+          <geom name="J4_case" type="mesh" mesh="dm4310_case" pos="4.32293090213e-15 -0.0851380989761 0.00785837787065" quat="0.998941249395 -0.046004133049 3.38656626095e-18 -6.10578304256e-17" material="anodized_case" contype="0" conaffinity="0" mass="0" />
         </body>
         <inertial pos="-0.034 0.05031374829 0.060230612" mass="0.0956957373" fullinertia="0.0003635544029 0.0002093501337 0.0001546030014 4.125759006e-20 2.174638212e-20 -0.0001513402296" />
         <geom name="J2_output" type="mesh" mesh="dm4340_output" pos="-0.0315 -1.04083408559e-17 -8.32667268469e-17" quat="0.5 0.5 0.5 -0.5" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
-        <geom name="J3_case" type="mesh" mesh="dm4340_case" pos="0.025 0.102575703925 0.122793423946" quat="0.123252158624 0.696282202411 -0.696282202411 0.123252158624" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+        <geom name="J3_case" type="mesh" mesh="dm4340_case" pos="0.025 0.102575703925 0.122793423946" quat="0.123252158624 0.696282202411 -0.696282202411 0.123252158624" material="anodized_case" contype="0" conaffinity="0" mass="0" />
       </body>
       <inertial pos="0.01507604763 2.580225811e-12 0.01861056836" mass="0.0832866955" fullinertia="5.850243319e-05 5.864603793e-05 4.739109029e-05 1.794403954e-21 -1.667119037e-05 -9.435348356e-21" />
       <geom name="J1_output" type="mesh" mesh="dm4340_output" pos="0 0 0" quat="0.5 -0.5 -0.5 0.5" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
-      <geom name="J2_case" type="mesh" mesh="dm4340_case" pos="-0.0315 1.00267016911e-15 0.04" quat="0.5 0.5 0.5 -0.5" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+      <geom name="J2_case" type="mesh" mesh="dm4340_case" pos="-0.0315 1.00267016911e-15 0.04" quat="0.5 0.5 0.5 -0.5" material="anodized_case" contype="0" conaffinity="0" mass="0" />
     </body>
-    <geom name="J1_case" type="mesh" mesh="dm4340_case" pos="-1.4155343564e-15 -1.01654795692e-15 0.0665" quat="0.5 -0.5 -0.5 0.5" rgba=".23 .26 .29 1" contype="0" conaffinity="0" mass="0" />
+    <geom name="J1_case" type="mesh" mesh="dm4340_case" pos="-1.4155343564e-15 -1.01654795692e-15 0.0665" quat="0.5 -0.5 -0.5 0.5" material="anodized_case" contype="0" conaffinity="0" mass="0" />
   </worldbody>
 </mujoco>
