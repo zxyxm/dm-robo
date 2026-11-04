@@ -15,7 +15,7 @@ from serial.tools.list_ports import comports
 
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
-from arm5_scan import ROOT, load_passes
+from arm5_scan import ROOT, load_passes, parallel_sections
 from arm4_twin import read_positions, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
 
@@ -49,6 +49,7 @@ class Panel:
         self.events = SimpleQueue()
         self.mode = "sim"
         self.writing = None
+        self.finished_message = None
         self.ink = []
         self.q = np.zeros(6)
         self.running = tk.BooleanVar(value=False)
@@ -87,6 +88,8 @@ class Panel:
             self.section = ttk.Combobox(outer, values=list(self.passes), state="readonly", width=30)
             self.section.current(next(i for i,k in enumerate(self.passes) if k.startswith("Y=250")))
             self.section.pack(anchor="w")
+            self.multi_btn = ttk.Button(outer, text="按当前探头角度 · 扫多个切面", command=self.start_parallel)
+            self.multi_btn.pack(anchor="w")
         self.write_btn = ttk.Button(outer, text="仿真扫描所选截面区间" if ultrasound else "仿真写 8", command=self.start_task)
         self.write_btn.pack(anchor="w")
         self.rows = []
@@ -108,6 +111,26 @@ class Panel:
         self.open_view()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.tick()
+
+    def start_parallel(self):
+        if self.mode != "sim":
+            return
+        self.open_view()
+        self.ink.clear()
+        self.running.set(False)
+        self.writing = self.parallel_frames(self.q.copy())
+
+    def parallel_frames(self, captured):
+        completed = 0
+        for offset, poses in parallel_sections(self.model, captured):
+            if not poses:
+                continue
+            completed += 1
+            self.ink.append(None)
+            self.status.set(f"仿真分段扫查 · 第 {completed} 面 · 相对当前截面 {offset:+d} mm")
+            for q in poses:
+                yield q, True
+        self.finished_message = f"多切面扫查结束 · 已扫 {completed}/9 面，其他面未找到连续可行段"
 
     def start_task(self):
         if self.mode != "sim":
@@ -199,6 +222,8 @@ class Panel:
                     self.q = value
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
         self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
+        if self.ultrasound:
+            self.multi_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
         ink = False
         manual = self.mode == "sim" and not self.running.get() and self.writing is None
         if manual:
@@ -212,7 +237,8 @@ class Panel:
                 for (scale, _), angle in zip(self.rows, np.degrees(self.q)):
                     scale.state(["!disabled"])
                     scale.set(float((angle+180)%360-180))
-                self.status.set("本段扫查结束 · 可选择其他截面区间" if self.ultrasound else "数字 8 已写完 · 笔尖已抬起")
+                self.status.set(self.finished_message or ("本段扫查结束 · 可选择其他截面区间" if self.ultrasound else "数字 8 已写完 · 笔尖已抬起"))
+                self.finished_message = None
         elif self.mode == "sim":
             t = time.monotonic() - self.t0
             self.q = np.radians([28,18,25,20,18,40]) * np.sin(t*np.array([.6,.42,.55,.73,.8,.95]))
@@ -233,7 +259,7 @@ class Panel:
         if self.view and self.view.is_running():
             with self.view.lock():
                 scene = self.view.user_scn
-                draw_ink(scene, self.ink)
+                draw_ink(scene, self.ink, radius=.00045 if self.ultrasound else .001)
                 if self.ultrasound and ink and scene.ngeom < scene.maxgeom:
                     beam = scene.geoms[scene.ngeom]
                     mujoco.mjv_initGeom(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),

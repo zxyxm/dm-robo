@@ -234,3 +234,63 @@ def load_passes():
 if __name__ == "__main__":
     solve()
     build_passes()
+
+def parallel_sections(model, initial_q):
+    """Yield (offset_mm, poses) for nine planes parallel to the captured acoustic plane."""
+    work = Workspace(model)
+    data = work.d
+    data.qpos[:] = initial_q
+    mujoco.mj_kinematics(model, data)
+    site = data.site("acoustic")
+    normal = site.xmat.reshape(3, 3)[:, 1].copy()
+    distance = (site.xpos - CENTER) @ normal
+    # Transform to the unit sphere, where every plane cuts a circle.
+    scaled = AXES * normal
+    length = np.linalg.norm(scaled)
+    pole = scaled / length
+    up = np.array([0., 0., 1.])
+    if abs(pole @ up) > .99:
+        up = np.array([1., 0., 0.])
+    vertical = up - pole * (up @ pole)
+    vertical /= np.linalg.norm(vertical)
+    across = np.cross(pole, vertical)
+    previous = np.array(initial_q)
+    for offset in (0, 2, 4, 6, 8, -2, -4, -6, -8):
+        level = (distance + offset / 1000) / length
+        runs = []
+        run = []
+        if abs(level) < 1:
+            for angle in np.deg2rad(np.arange(-90, 270, 2)):
+                circle = np.cos(angle)*across + np.sin(angle)*vertical
+                unit = level*pole + np.sqrt(1-level**2)*circle
+                target = CENTER + AXES*unit
+                inward = -unit / AXES
+                inward -= normal * (normal @ inward)
+                inward /= np.linalg.norm(inward)
+                frame = np.column_stack((np.cross(normal,inward), normal, inward))
+                found = None
+                if target[2] >= 0:
+                    ref = run[-1] if run else previous
+                    choices = []
+                    for q in work.solutions(target,frame):
+                        delta = (q-ref+np.pi)%(2*np.pi)-np.pi
+                        choices.append((np.linalg.norm(delta),ref+delta))
+                    for _,q in sorted(choices,key=lambda item:item[0]):
+                        if work.feasible(q,target,frame):
+                            found = q
+                            break
+                if run and (found is None or np.max(np.abs(found-run[-1])) > .35):
+                    runs.append(run)
+                    run = []
+                if found is not None:
+                    run.append(found)
+        if run:
+            runs.append(run)
+        best = max(runs,key=len,default=[])
+        if len(best) < 2:
+            best = []
+        elif np.linalg.norm(previous-best[-1]) < np.linalg.norm(previous-best[0]):
+            best.reverse()
+        if best:
+            previous = best[-1]
+        yield offset,best

@@ -32,9 +32,11 @@ def pen_trajectory(model):
             yield data.qpos.copy(), ink
 
 
-def draw_ink(scene, points):
+def draw_ink(scene, points, radius=.001):
     scene.ngeom = 0
     for a, b in zip(points, points[1:]):
+        if a is None or b is None:
+            continue
         if scene.ngeom >= scene.maxgeom:
             break
         geom = scene.geoms[scene.ngeom]
@@ -42,5 +44,5 @@ def draw_ink(scene, points):
                            np.zeros(3), np.eye(3).ravel(), np.array([.05,.15,.40,1], np.float32))
         # Offset the ink slightly toward the writing side to avoid z-fighting.
         off = np.array([0, .0004, 0])
-        mujoco.mjv_makeConnector(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, .001, *(a+off), *(b+off))
+        mujoco.mjv_makeConnector(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, radius, *(a+off), *(b+off))
         scene.ngeom += 1
