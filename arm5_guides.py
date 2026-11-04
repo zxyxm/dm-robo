@@ -8,24 +8,17 @@ from arm5_scan import AXES, CENTER
 
 
 @lru_cache(maxsize=64)
-def guides(axis, position, spacing):
-    lines = []
-    angles = np.linspace(0, np.pi, 25)
-    for fixed in (1-axis, axis):
-        middle = position if fixed == axis else 1000*CENTER[fixed]
-        for n in range(-2, 3):
-            d = (middle+n*spacing)/1000 - CENTER[fixed]
-            if abs(d) >= AXES[fixed]:
-                continue
-            scale = np.sqrt(1-(d/AXES[fixed])**2)
-            points = np.tile(CENTER,(len(angles),1))
-            points[:,fixed] += d
-            points[:,1-fixed] += AXES[1-fixed]*scale*np.cos(angles)
-            points[:,2] += AXES[2]*scale*np.sin(angles) + .0003
-            selected = fixed == axis and n == 0
-            color = [.95,.32,.04,1] if selected else [.48,.57,.65,.72]
-            lines.extend((a,b,.00062 if selected else .00022,color) for a,b in zip(points,points[1:]))
-    return lines
+def guides(axis, position):
+    offset = position/1000 - CENTER[axis]
+    if abs(offset) >= AXES[axis]:
+        return []
+    scale = np.sqrt(1-(offset/AXES[axis])**2)
+    angle = np.linspace(0, np.pi, 65)
+    points = np.tile(CENTER,(len(angle),1))
+    points[:,axis] += offset
+    points[:,1-axis] += AXES[1-axis]*scale*np.cos(angle)
+    points[:,2] += AXES[2]*scale*np.sin(angle) + .0003
+    return [(a,b,.00062,[.95,.32,.04,1]) for a,b in zip(points,points[1:])]
 
 
 def draw_coordinates(scene, lines, base=None, start=None):
