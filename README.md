@@ -24,3 +24,23 @@ python arm4_fk.py 30 -20 35 10 -15 45
 | 30, −20, 35, 10, −15, 45 | 16.84, 25.30, 398.14 | 11.744, 18.358, −82.724 |
 
 模型使用简化连杆，适用于法兰位姿计算。实机关节限位、编码器零点、质量惯量、驱动参数和碰撞外形尚未标定。
+
+## 六轴达妙 CAN 调试
+
+`dm_debug.py` 是独立的 Python 3.10+ 命令行工具。J1～J3 为 4340、J4～J5 为 4310、J6 为 3507，编码量程从每台驱动器读取。默认电机 ID 为 0x01～0x06，反馈 Master ID 为 0x11～0x16；用达妙上位机逐台配置为唯一 ID，也可用 `--ids` 和 `--masters` 分别传六个逗号分隔的 ID。使用经典 CAN 标准帧，并保证只有一个程序控制总线。
+
+Windows 达妙 U2CAN 串口版请安装 pyserial，将 COM5 改成实际端口。串口默认 921600，可用 `--baud` 更改；CAN 侧波特率由转接器和驱动器预先配成一致。原生 CAN 使用 python-can，例如 Linux 下已配置的 can0 使用 `--interface socketcan --channel can0`，Windows PEAK 使用 `--interface pcan --channel PCAN_USBBUS1`（需厂商驱动）。
+
+```sh
+python -m pip install pyserial
+python dm_debug.py --channel COM5 monitor --once
+python dm_debug.py --channel COM5 monitor
+python dm_debug.py --channel COM5 jog 6 2
+python dm_debug.py --channel COM5 move6 1 -1 1 0 0 2
+```
+
+monitor 只读，显示位置、速度、估算扭矩、状态码和两路温度，0 表示失能、1 表示使能。运动命令要求所选轴均处于 MIT 模式且失能无故障，以电机当前角度为起点，各轴增量不超过 ±5°。六轴按同一插值进度逐帧发送，受总线延迟影响。每次结束或异常时，程序尝试失能本次接管的电机并读取状态确认。输出的目标和实测角度用于判断跟踪情况。
+
+首次点动请支撑肩肘和末端，确认运动方向与机械限位，并在驱动器预设通信超时保护。低增益点动没有重力补偿，失能后电机会释放；物理断线时软件无法保证失能帧送达。总线角度与 MuJoCo 零点需另行标定。协议依据见[达妙官方 U2CAN Python 例程](https://github.com/dmBots/motor-sdk/tree/main/Python例程/u2can)。
+
+无硬件回归测试：`python -m unittest -v test_dm_debug`。测试覆盖模拟六轴点动及控制帧发送失败后的失能清理。
