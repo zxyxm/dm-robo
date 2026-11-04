@@ -79,3 +79,14 @@ python arm4_twin.py --channel COM5 --zero-deg 0 0 0 0 0 0 --signs 1 1 1 1 1 1
 五件合计约 451.1 g。上述惯性只计这五个结构件；整臂重力矩还需加入电机、紧固件、线束及末端工具。底板独立于碳纤维长臂板。橙色球体标示关节位置。
 
 ![装配体 4 材料分布](arm4_materials.png)
+
+## Windows 双击启动
+
+启动器固定使用仓库目录内的 `.venv\Scripts\python.exe`。在新电脑上，从仓库目录用 Windows 64 位 Python 3.10 一次性安装：
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install mujoco==3.1.6 numpy==1.26.4 scipy==1.13.1 pyserial==3.5
+```
+
+安装后双击 **启动机械臂孪生.cmd** 打开演示。
