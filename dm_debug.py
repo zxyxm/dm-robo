@@ -110,7 +110,7 @@ def display(index, state):
           f"{torque:7.2f} Nm  MOS={mos} C rotor={rotor} C")
 
 
-def move(bus, joints, offsets):
+def move(bus, joints, offsets, on_sample=None):
     initial = []
     owned = []
     try:
@@ -134,13 +134,17 @@ def move(bus, joints, offsets):
         while True:
             elapsed = time.monotonic() - start
             fraction = min(1., elapsed / ramp)
+            feedback = {}
             for motor, pos, delta in zip(joints, initial, offsets):
                 target = pos + fraction * delta
                 state = motor.status(bus, motor.target(target))
                 if state[0] != 1 or abs(state[1] - target) > math.radians(8):
                     raise RuntimeError(f"0x{motor.slave:X}: fault or excessive tracking error")
+                feedback[motor.slave] = state[1]
                 if elapsed >= ramp + .5:
                     print(f"0x{motor.slave:X}: target={math.degrees(target):.2f} measured={math.degrees(state[1]):.2f} deg")
+            if on_sample is not None:
+                on_sample(feedback)
             if elapsed >= ramp + .5:
                 break
             time.sleep(.015)

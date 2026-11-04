@@ -44,3 +44,22 @@ monitor 只读，显示位置、速度、估算扭矩、状态码和两路温度
 首次点动请支撑肩肘和末端，确认运动方向与机械限位，并在驱动器预设通信超时保护。低增益点动没有重力补偿，失能后电机会释放；物理断线时软件无法保证失能帧送达。总线角度与 MuJoCo 零点需另行标定。协议依据见[达妙官方 U2CAN Python 例程](https://github.com/dmBots/motor-sdk/tree/main/Python例程/u2can)。
 
 无硬件回归测试：`python -m unittest -v test_dm_debug`。测试覆盖模拟六轴点动及控制帧发送失败后的失能清理。
+
+## 装配体 4 的 CAN / MuJoCo 运动学孪生
+
+`arm4_twin.py` 在同一个进程中读取六轴反馈、计算法兰位姿并更新 MuJoCo 三维视图。默认硬件模式只读。输出 XYZ 单位为 mm，RPY 单位为度，坐标系见上文。无硬件可直接运行：
+
+```sh
+python arm4_twin.py --demo
+python arm4_twin.py --demo --headless --frames 10
+```
+
+实机先运行六轴 monitor 读数，将机械臂置于 STEP 保存姿态，记录六个电机角度作为 `--zero-deg`，逐轴核对编码器方向后设置 `--signs`。换算关系为 `模型角 = 方向 × (实测角 − 零位读数)`。示例中的六个零和正号须替换为标定值：
+
+```sh
+python arm4_twin.py --channel COM5 --zero-deg 0 0 0 0 0 0 --signs 1 1 1 1 1 1
+```
+
+在这条命令末尾追加 `--jog 6 2` 可进行 J6 点动并同步显示，或追加 `--move6 1 -1 1 0 0 2` 联动。增量沿用调试工具的**电机原生角度方向**。调试和孪生共用一个 CAN 连接，运行前关闭其他占用转接器的程序。动作结束后程序失能所控制的轴，首次点动须支撑机械臂。退出查看器会终止本次点动。六轴反馈按序采集，任一轴反馈超时或报错即停止更新。
+
+模型显示简化连杆、法兰位置与方向。当前实现用于运动学跟随，不估算碰撞力、负载能力或驱动动态。通过 `python -m unittest -v test_dm_debug test_arm4_twin` 运行离线联调测试。
