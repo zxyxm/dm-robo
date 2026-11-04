@@ -20,6 +20,7 @@ from serial.tools.list_ports import comports
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
 from arm5_motion import motion_frames
+from arm5_coverage import BLUE, draw_area, sample_section, solve_area
 from arm5_guides import guides, draw_coordinates
 from arm5_scan import AXES, CENTER, ROOT, Workspace, load_passes, surface_runs, surface_start
 from arm5_force import ProbeControl, contact, estimate_force, jacobians
@@ -166,6 +167,16 @@ class Panel:
             self.lateral_slider.grid(row=5,column=1,columnspan=2,sticky="ew")
             ttk.Button(tools,text="← 起点",command=lambda:self.nudge_start(-1)).grid(row=5,column=0)
             ttk.Button(tools,text="起点 →",command=lambda:self.nudge_start(1)).grid(row=5,column=3)
+            self.coverage_text = tk.StringVar()
+            ttk.Label(tools,textvariable=self.coverage_text).grid(row=7,column=0,columnspan=4,sticky="w")
+            self.area_cache = {}
+            self.area_stop = Event()
+            self.slice_stop = Event()
+            self.coverage_results = SimpleQueue()
+            self.preview_job = None
+            self.preview_key = None
+            self.area_axis = None
+            self.blue_lines = []
             self.select_slice(1)
         if not ultrasound:
             self.write_btn = ttk.Button(controls,text="仿真写 8",command=self.start_task)
@@ -231,6 +242,58 @@ class Panel:
         self.lateral_slider.configure(from_=center-reach,to=center+reach,command="")
         self.lateral_slider.set(point[1-axis])
         self.lateral_slider.configure(command=self.slide_start)
+        self.refresh_coverage()
+
+    def refresh_coverage(self):
+        axis = self.slice_axis
+        position = self.position_mm[axis]
+        key = (axis,position)
+        if key == self.preview_key:
+            return
+        self.preview_key = key
+        if axis != self.area_axis:
+            self.area_stop.set()
+            self.area_stop = Event()
+            self.area_axis = axis
+            if axis not in self.area_cache:
+                def area(stop):
+                    try:
+                        patches = solve_area(self.model,axis,stop)
+                        if not stop.is_set():
+                            self.coverage_results.put(("area",axis,patches))
+                    except Exception as exc:
+                        self.coverage_results.put(("error",key,str(exc)))
+                Thread(target=area,args=(self.area_stop,),daemon=True).start()
+        self.slice_stop.set()
+        stop = self.slice_stop = Event()
+        self.blue_lines = []
+        self.coverage_text.set("正在求解当前断面 · 蓝色表示可扫")
+        if self.preview_job is not None:
+            self.root.after_cancel(self.preview_job)
+        def section():
+            try:
+                row = sample_section(Workspace(self.model),axis,position,2,stop)
+                if not stop.is_set():
+                    lines = [(a,b,.0008,BLUE) for (a,ok),(b,other) in zip(row,row[1:]) if ok and other]
+                    self.coverage_results.put(("section",key,(lines,sum(ok for _,ok in row),len(row))))
+            except Exception as exc:
+                self.coverage_results.put(("error",key,str(exc)))
+        def start():
+            self.preview_job = None
+            Thread(target=section,daemon=True).start()
+        self.preview_job = self.root.after(220,start)
+
+    def poll_coverage(self):
+        while not self.coverage_results.empty():
+            kind,key,result = self.coverage_results.get_nowait()
+            if kind=="area":
+                self.area_cache[key] = result
+            elif key==self.preview_key:
+                if kind=="error":
+                    self.coverage_text.set("可扫区求解失败 · "+result)
+                else:
+                    self.blue_lines,count,total = result
+                    self.coverage_text.set(f"蓝色为可扫区 · 当前断面 {count}/{total} 个采样点可达")
 
     def slide_start(self, value):
         lo,hi = (float(self.lateral_slider.cget(k)) for k in ("from","to"))
@@ -508,6 +571,7 @@ class Panel:
                     self.q,self.velocity,self.tau,self.feedback_at = value
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
         if self.ultrasound:
+            self.poll_coverage()
             self.init_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
         else:
             self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
@@ -564,7 +628,8 @@ class Panel:
                 draw_ink(scene, self.ink, radius=.00045 if self.ultrasound else .001)
                 if self.ultrasound:
                     lines = guides(self.slice_axis, self.position_mm[self.slice_axis])
-                    draw_coordinates(scene, lines, self.data.body("mount"), getattr(self,"start_mm",None))
+                    draw_coordinates(scene, lines+self.blue_lines, self.data.body("mount"), getattr(self,"start_mm",None))
+                    draw_area(scene,self.area_cache.get(self.slice_axis,()))
                 if self.ultrasound and ink and scene.ngeom < scene.maxgeom:
                     beam = scene.geoms[scene.ngeom]
                     mujoco.mjv_initGeom(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),
@@ -577,6 +642,12 @@ class Panel:
         self.root.after(25 if self.ultrasound else 40, self.tick)
 
     def close(self):
+        if self.ultrasound:
+            self.area_stop.set()
+            self.slice_stop.set()
+            if self.preview_job is not None:
+                self.root.after_cancel(self.preview_job)
+                self.preview_job = None
         self.cancel_plan.set()
         self.stop.set()
         if self.worker and self.worker.is_alive():

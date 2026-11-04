@@ -315,12 +315,24 @@ def surface_start(axis, xyz_mm):
     return (CENTER + AXES*unit)*1000, np.degrees(angle)
 
 
+def section_pose(axis,fixed,angle):
+    lateral = np.eye(3)[axis]
+    t = np.radians(angle)
+    unit = lateral*fixed
+    unit[[1-axis,2]] = np.sqrt(1-fixed**2)*np.array([np.cos(t),np.sin(t)])
+    target = CENTER + AXES*unit
+    beam = -unit/AXES
+    beam[axis] = 0
+    beam /= np.linalg.norm(beam)
+    frame = np.column_stack((np.cross(lateral,beam), lateral, beam))
+    return target,frame
+
+
 def surface_runs(work, axis, position, start_angle, left, right, initial, *, connected=False):
     """Two sweeps from the requested start, splitting at gaps and branch changes."""
     fixed = (position/1000-CENTER[axis])/AXES[axis]
     if abs(fixed) >= 1:
         return
-    lateral = np.eye(3)[axis]
     ends = dict.fromkeys((max(0.,start_angle-right), min(180.,start_angle+left)))
     for end in ends:
         count = int(np.ceil(abs(end-start_angle)/2))
@@ -328,14 +340,7 @@ def surface_runs(work, axis, position, start_angle, left, right, initial, *, con
             continue
         run = []
         for angle in np.linspace(start_angle,end,count+1):
-            t = np.radians(angle)
-            unit = lateral*fixed
-            unit[[1-axis,2]] = np.sqrt(1-fixed**2)*np.array([np.cos(t),np.sin(t)])
-            target = CENTER + AXES*unit
-            beam = -unit/AXES
-            beam[axis] = 0
-            beam /= np.linalg.norm(beam)
-            frame = np.column_stack((np.cross(lateral,beam), lateral, beam))
+            target,frame = section_pose(axis,fixed,angle)
             ref = run[-1] if run else initial
             choices = []
             for rotation in (frame, frame @ np.diag([-1,-1,1])):
