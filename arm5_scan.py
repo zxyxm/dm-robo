@@ -315,7 +315,7 @@ def surface_start(axis, xyz_mm):
     return (CENTER + AXES*unit)*1000, np.degrees(angle)
 
 
-def surface_runs(work, axis, position, start_angle, left, right, initial):
+def surface_runs(work, axis, position, start_angle, left, right, initial, *, connected=False):
     """Two sweeps from the requested start, splitting at gaps and branch changes."""
     fixed = (position/1000-CENTER[axis])/AXES[axis]
     if abs(fixed) >= 1:
@@ -344,6 +344,8 @@ def surface_runs(work, axis, position, start_angle, left, right, initial):
                     choices.append((np.linalg.norm(delta),ref+delta,rotation))
             found = next((q for _,q,r in sorted(choices,key=lambda item:item[0])
                           if work.feasible(q,target,r)),None)
+            if connected and (found is None or (run and np.max(np.abs(found-ref)) > .35)):
+                break
             if run and (found is None or np.max(np.abs(found-ref)) > .35):
                 yield run
                 run = []

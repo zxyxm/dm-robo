@@ -117,7 +117,9 @@ class Panel:
                 ttk.Button(tools,text=name,command=action).grid(row=0,column=col)
             ttk.Label(tools,text="间距 (mm)").grid(row=1,column=0)
             ttk.Combobox(tools,textvariable=self.spacing,values=("1","2","5","10"),state="readonly",width=5).grid(row=1,column=1)
-            self.write_btn = ttk.Button(tools,text="扫描橙色线",command=self.start_selected)
+            self.init_btn = ttk.Button(tools,text="初始化位置",command=self.initialize_scan)
+            self.init_btn.grid(row=4,column=0,columnspan=2,sticky="ew")
+            self.write_btn = ttk.Button(tools,text="自动扫描",command=self.start_selected)
             self.write_btn.grid(row=1,column=2,columnspan=2,sticky="ew")
             ttk.Label(tools,textvariable=self.slice_label).grid(row=2,column=0,columnspan=2,sticky="w")
             self.plane_slider = ttk.Scale(tools)
@@ -129,7 +131,16 @@ class Panel:
             for i,(label,var) in enumerate(zip(("X","Y","Z","左弧°","右弧°"),self.coords+self.extents)):
                 ttk.Label(fields,text=label).grid(row=0,column=2*i)
                 ttk.Entry(fields,textvariable=var,width=5).grid(row=0,column=2*i+1)
-            ttk.Button(tools,text="贴合起点 (mm)",command=self.apply_start).grid(row=4,column=0,columnspan=2)
+            self.track = None
+            self.auto_targets = []
+            ttk.Label(tools,text="手动扫描  ← 左").grid(row=6,column=0)
+            self.scrub_position = tk.DoubleVar()
+            self.scrub = ttk.Scale(tools,variable=self.scrub_position,command=self.manual_scan)
+            self.scrub.grid(row=6,column=1,columnspan=2,sticky="ew")
+            ttk.Label(tools,text="右 →").grid(row=6,column=3)
+            for var in self.coords+self.extents:
+                var.trace_add("write",lambda *_:self.invalidate_scan())
+
             self.arc_angles = [90.,90.]
             self.lateral_slider = ttk.Scale(tools,command=self.slide_start)
             self.lateral_slider.grid(row=5,column=1,columnspan=2,sticky="ew")
@@ -187,12 +198,7 @@ class Panel:
         point[axis] = self.position_mm[axis]
         point[1-axis] += reach*np.cos(np.radians(angle))
         point[2] += AXES[2]*scale*1000*np.sin(np.radians(angle))
-        self.cancel_plan.set()
-        if self.writing is not None:
-            self.writing = None
-            for (slider,_),q in zip(self.rows,self.q):
-                slider.set((np.degrees(q)+180)%360-180)
-            self.status.set("位置已更新 · 点击扫描橙色线重新开始")
+        self.invalidate_scan()
         self.ink.clear()
         self.plane_slider.configure(command="",from_=(CENTER[axis]-AXES[axis])*1000+.01,
                                     to=(CENTER[axis]+AXES[axis])*1000-.01)
@@ -236,55 +242,33 @@ class Panel:
         self.status.set("绿色标记为曲面起点 · 扫描时检查可达性")
         return angle
 
-    def selected_runs(self,axis,position,angle,left,right,initial,cancel):
-        work = Workspace(self.model)
-        for poses in surface_runs(work,axis,position,angle,left,right,initial):
-            if cancel.is_set():
-                return
-            yield f"{'XY'[axis]} = {position:g} mm", poses
-
-    def play_plan(self, make_runs):
+    def invalidate_scan(self):
         self.cancel_plan.set()
-        cancel = self.cancel_plan = Event()
-        queue = SimpleQueue()
-        initial = self.q.copy()
-        def solve():
-            try:
-                for label,poses in make_runs(initial,cancel):
-                    if cancel.is_set():
-                        return
-                    if len(poses):
-                        queue.put((label,poses))
-                queue.put((None,None))
-            except Exception as exc:
-                queue.put((str(exc),None))
-        Thread(target=solve,daemon=True).start()
-        self.finished_message = None
-        self.status.set("正在后台求解 · 等待可达轨迹")
-        def playback():
-            current = initial
-            count = 0
-            while True:
-                try:
-                    label,poses = queue.get_nowait()
-                except Empty:
-                    yield current,False
-                    continue
-                if poses is None:
-                    self.finished_message = ("求解失败 · "+label if label else f"扫描结束 · 已播放 {count} 个可达段")
-                    return
-                self.ink.append(None)
-                self.status.set("仿真转位 · "+label)
-                path = np.unwrap(np.vstack([current,poses]),axis=0)
-                for current in motion_frames(path[:2]):
-                    yield current,False
-                self.status.set("贴面扫描 · "+label)
-                for current in motion_frames(path[1:]):
-                    yield current,True
-                count += 1
-        self.writing = playback()
+        self.track = None
+        self.auto_targets = []
+        if self.writing is not None:
+            self.writing = None
+            for (slider,_),q in zip(self.rows,self.q):
+                slider.set((np.degrees(q)+180)%360-180)
+            self.status.set("设置已变更 · 请重新初始化")
+        self.scrub.state(["disabled"])
+        self.write_btn.state(["disabled"])
+
+    def manual_scan(self,value):
+        if self.track is not None and self.mode == "sim":
+            self.automatic = False
+            self.auto_targets.clear()
+            self.target = float(value)
+            self.status.set("手动扫描 · 拖动滑条沿橙线左右移动")
 
     def start_selected(self):
+        if self.track is not None and self.mode == "sim":
+            self.automatic = True
+            self.auto_targets = [len(self.track)-1,0,self.origin_index]
+            self.target = self.auto_targets.pop(0)
+            self.status.set("自动扫描 · 沿可达弧段往返")
+
+    def initialize_scan(self):
         if self.mode != "sim":
             return
         angle = self.apply_start()
@@ -302,7 +286,69 @@ class Panel:
         self.running.set(False)
         axis = self.slice_axis
         position = self.position_mm[axis]
-        self.play_plan(lambda initial,cancel:self.selected_runs(axis,position,angle,left,right,initial,cancel))
+        initial = self.q.copy()
+        cancel = self.cancel_plan = Event()
+        result = SimpleQueue()
+        self.status.set("初始化中 · 求解起点及相连的可达弧段")
+        def plan():
+            try:
+                work = Workspace(self.model)
+                def side(l,r):
+                    poses = next(surface_runs(work,axis,position,angle,l,r,initial,connected=True),[])
+                    return np.asarray(poses)
+                home = side(0,0)
+                if not len(home):
+                    raise ValueError("所选起点不可达，请移动橙线或调整起点")
+                sides = []
+                for l,r in ((left,0),(0,right)):
+                    if cancel.is_set():
+                        return
+                    poses = side(l,r)
+                    sides.append(np.vstack([home,list(motion_frames(poses))]) if len(poses)>1 else home)
+                result.put((np.vstack([sides[0][::-1],sides[1][1:]]),len(sides[0])-1))
+            except Exception as exc:
+                result.put((None,str(exc)))
+        Thread(target=plan,daemon=True).start()
+        def control():
+            while result.empty():
+                yield initial,False
+            path,origin = result.get()
+            if path is None:
+                self.finished_message = origin
+                return
+            for q in motion_frames([initial,path[origin]]):
+                yield q,False
+            self.track = path
+            self.origin_index = origin
+            current = self.target = float(origin)
+            self.scrub.configure(from_=0,to=max(1,len(path)-1))
+            self.scrub_position.set(current)
+            if len(path)>1:
+                self.scrub.state(["!disabled"])
+                self.write_btn.state(["!disabled"])
+            self.status.set("起点已就位 · 可自动扫描或拖动手动扫描" if len(path)>1 else "起点已就位 · 当前范围仅有一个可达点")
+            self.automatic = False
+            speed = 0.
+            while True:
+                distance = self.target-current
+                desired = np.sign(distance)*min(.65,np.sqrt(.03*abs(distance)))
+                speed += np.clip(desired-speed,-.015,.015)
+                step = speed
+                if step*distance >= 0 and abs(step)>=abs(distance):
+                    step,speed = distance,0.
+                current = float(np.clip(current+step,0,len(path)-1))
+                if self.automatic:
+                    self.scrub_position.set(current)
+                if current == self.target and self.automatic:
+                    if self.auto_targets:
+                        self.target = self.auto_targets.pop(0)
+                    else:
+                        self.automatic = False
+                        self.status.set("自动扫描完成 · 已返回起点")
+                lo = int(current)
+                q = path[lo]+(current-lo)*(path[min(lo+1,len(path)-1)]-path[lo])
+                yield q,abs(step)>1e-8
+        self.writing = control()
 
     def start_task(self):
         if self.mode != "sim":
@@ -356,6 +402,8 @@ class Panel:
         self.writing = None
         self.ink.clear()
         self.cancel_plan.set()
+        if self.ultrasound:
+            self.invalidate_scan()
         self.mode = "hardware"
         self.running.set(False)
         self.status.set("连接中 · 等待六轴有效反馈")
@@ -367,6 +415,8 @@ class Panel:
         self.worker.start()
 
     def simulation(self):
+        if self.ultrasound:
+            self.invalidate_scan()
         self.cancel_plan.set()
         self.stop.set()
         self.writing = None
@@ -390,7 +440,10 @@ class Panel:
                 else:
                     self.q = value
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
-        self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
+        if self.ultrasound:
+            self.init_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
+        else:
+            self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
         ink = False
         manual = self.mode == "sim" and not self.running.get() and self.writing is None
         if manual:
