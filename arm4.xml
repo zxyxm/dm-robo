@@ -17,6 +17,7 @@
     <mesh name="dm3507_output" file="meshes/dm3507_output.stl" />
   </asset>
   <worldbody>
+    <geom name="writing_board" type="box" pos="0 -.229 .24" size=".066 .003 .061" rgba=".94 .95 .92 1" />
     <geom type="box" size=".15 .15 .005" pos="0 0 -.005" rgba=".35 .4 .45 1" />
     <body name="link1" pos="-1.41398004416e-15 -1.01607611214e-15 0.0665">
       <joint name="J1" type="hinge" axis="-1.5642807763e-16 -7.80232566933e-31 -1" />
@@ -35,7 +36,11 @@
               <geom type="mesh" mesh="bracket4" material="al5052" contype="0" conaffinity="0" />
               <body name="link6" pos="4.31299440606e-15 -0.077872722746 -0.00206132290596">
                 <joint name="J6" type="hinge" axis="-1.59668419547e-16 0.999649842696 0.0264611412832" />
+                <geom name="pen_grip" type="capsule" fromto="0 0 0 0 -.018 -.000477" size=".008" rgba=".14 .15 .17 1" mass="0" contype="0" conaffinity="0" />
+                <geom name="pen_barrel" type="capsule" fromto="0 -.018 -.000477 0 -.073 -.001932" size=".004" rgba=".13 .44 .72 1" mass="0" contype="0" conaffinity="0" />
+                <geom name="pen_nib" type="capsule" fromto="0 -.073 -.001932 0 -.07897 -.00209" size=".001" rgba=".08 .12 .2 1" mass="0" contype="0" conaffinity="0" />
                 <site name="flange" quat="0.697688633531 0.716401124121 5.65727189077e-17 5.63428301052e-17" size=".005" />
+                <site name="pen_tip" pos="0 -.07997 -.002117" size=".0002" rgba="0 0 0 0" />
                 <inertial pos="0 0 0" mass="0.007238229473870883" diaginertia="4.16922017695e-07 4.16922017695e-07 4.16922017695e-07" />
                 <geom name="J6_output" type="mesh" mesh="dm3507_output" pos="0 -1.83131287912e-13 -2.14994688719e-13" quat="0.999912456842 0.0132317289889 1.625559312e-19 7.98433504084e-17" rgba=".77 .79 .82 1" contype="0" conaffinity="0" mass="0" />
               </body>

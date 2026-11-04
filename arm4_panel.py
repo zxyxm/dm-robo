@@ -11,6 +11,7 @@ from mujoco import viewer
 import numpy as np
 from serial.tools.list_ports import comports
 
+from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
 from arm4_twin import read_positions, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
@@ -42,6 +43,8 @@ class Panel:
         self.stop = Event()
         self.events = SimpleQueue()
         self.mode = "sim"
+        self.writing = None
+        self.ink = []
         self.q = np.zeros(6)
         self.running = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="仿真模式 · 可拖动关节或播放演示")
@@ -74,6 +77,8 @@ class Panel:
         ttk.Label(outer, textvariable=self.status, wraplength=500).pack(anchor="w", pady=6)
         self.play = ttk.Checkbutton(outer, text="播放仿真演示", variable=self.running)
         self.play.pack(anchor="w")
+        self.write_btn = ttk.Button(outer, text="仿真写 8", command=self.write_eight)
+        self.write_btn.pack(anchor="w")
         self.rows = []
         for i in range(6):
             row = ttk.Frame(outer)
@@ -90,6 +95,20 @@ class Panel:
         self.open_view()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.tick()
+
+    def write_eight(self):
+        if self.mode != "sim":
+            return
+        self.open_view()
+        self.view.cam.azimuth = -130
+        self.view.cam.elevation = -10
+        self.view.cam.lookat[:] = [0, -.13, .20]
+        self.view.cam.distance = .57
+        self.running.set(False)
+        self.play.state(["disabled"])
+        self.ink.clear()
+        self.writing = pen_trajectory(self.model)
+        self.status.set("仿真写字 · 从 STEP 零位起笔")
 
     def refresh(self):
         channel = self.fields["端口"]
@@ -125,6 +144,8 @@ class Panel:
         except Exception as exc:
             self.status.set(f"未连接 · 请填写实际端口与六轴标定值（英文逗号分隔）。{exc}")
             return
+        self.writing = None
+        self.ink.clear()
         self.mode = "hardware"
         self.running.set(False)
         self.status.set("连接中 · 等待六轴有效反馈")
@@ -137,6 +158,7 @@ class Panel:
 
     def simulation(self):
         self.stop.set()
+        self.writing = None
         self.mode = "sim"
         self.play.state(["!disabled"])
         self.status.set("仿真模式 · 滑块只控制模型")
@@ -157,9 +179,21 @@ class Panel:
                 else:
                     self.q = value
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
-        manual = self.mode == "sim" and not self.running.get()
+        self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
+        ink = False
+        manual = self.mode == "sim" and not self.running.get() and self.writing is None
         if manual:
             self.q = np.radians([scale.get() for scale, _ in self.rows])
+        elif self.writing is not None:
+            try:
+                self.q, ink = next(self.writing)
+            except StopIteration:
+                self.writing = None
+                self.play.state(["!disabled"])
+                for (scale, _), angle in zip(self.rows, np.degrees(self.q)):
+                    scale.state(["!disabled"])
+                    scale.set(float(angle))
+                self.status.set("数字 8 已写完 · 笔尖已抬起")
         elif self.mode == "sim":
             t = time.monotonic() - self.t0
             self.q = np.radians([28,18,25,20,18,40]) * np.sin(t*np.array([.6,.42,.55,.73,.8,.95]))
@@ -171,7 +205,11 @@ class Panel:
         xyz, rpy = update_pose(self.model, self.data, self.q, 0, 1)
         self.pose.set("XYZ (mm)   " + "   ".join(f"{v:.2f}" for v in xyz) +
                       "\nRPY (°)       " + "   ".join(f"{v:.2f}" for v in rpy))
+        if ink:
+            self.ink.append(self.data.site("pen_tip").xpos.copy())
         if self.view and self.view.is_running():
+            with self.view.lock():
+                draw_ink(self.view.user_scn, self.ink)
             self.view.sync()
         self.root.after(40, self.tick)
 
