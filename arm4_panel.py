@@ -3,16 +3,19 @@ from contextlib import closing
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
 import time
+import argparse
 import tkinter as tk
 from tkinter import ttk
 
 import mujoco
 from mujoco import viewer
 import numpy as np
+from scipy.spatial.transform import Rotation
 from serial.tools.list_ports import comports
 
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
+from arm5_scan import ROOT, load_passes
 from arm4_twin import read_positions, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
 
@@ -33,10 +36,12 @@ def stream(stop, events, interface, channel, rate, slaves, masters, zero, signs)
 
 
 class Panel:
-    def __init__(self, root):
+    def __init__(self, root, ultrasound=True):
         self.root = root
         root.title("达妙六轴机械臂 · 孪生操作面板")
-        self.model = load_model()
+        self.ultrasound = ultrasound
+        self.passes = load_passes() if ultrasound else {}
+        self.model = load_model(ROOT/"arm5.xml") if ultrasound else load_model()
         self.data = mujoco.MjData(self.model)
         self.view = None
         self.worker = None
@@ -51,7 +56,7 @@ class Panel:
         self.pose = tk.StringVar()
         outer = ttk.Frame(root, padding=14)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="装配体 4   /   六轴操作面板", font=("Microsoft YaHei UI", 14)).pack(anchor="w")
+        ttk.Label(outer, text=("装配体 5   /   倒挂超声扫查" if ultrasound else "装配体 4   /   六轴操作面板"), font=("Microsoft YaHei UI", 14)).pack(anchor="w")
         bar = ttk.Frame(outer)
         bar.pack(fill="x", pady=8)
         self.connect_btn = ttk.Button(bar, text="连接硬件跟随", command=self.connect)
@@ -76,8 +81,13 @@ class Panel:
         self.refresh()
         ttk.Label(outer, textvariable=self.status, wraplength=500).pack(anchor="w", pady=6)
         self.play = ttk.Checkbutton(outer, text="播放仿真演示", variable=self.running)
-        self.play.pack(anchor="w")
-        self.write_btn = ttk.Button(outer, text="仿真写 8", command=self.write_eight)
+        if not ultrasound:
+            self.play.pack(anchor="w")
+        else:
+            self.section = ttk.Combobox(outer, values=list(self.passes), state="readonly", width=30)
+            self.section.current(next(i for i,k in enumerate(self.passes) if k.startswith("Y=250")))
+            self.section.pack(anchor="w")
+        self.write_btn = ttk.Button(outer, text="仿真扫描所选截面区间" if ultrasound else "仿真写 8", command=self.start_task)
         self.write_btn.pack(anchor="w")
         self.rows = []
         for i in range(6):
@@ -91,15 +101,24 @@ class Panel:
             val.pack(side="right")
             self.rows.append((control, val))
         ttk.Label(outer, textvariable=self.pose).pack(anchor="w", pady=6)
+        if ultrasound:
+            for (slider,_),q in zip(self.rows,np.degrees(self.passes[self.section.get()][0])):
+                slider.set(float((q+180)%360-180))
         self.t0 = time.monotonic()
         self.open_view()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.tick()
 
-    def write_eight(self):
+    def start_task(self):
         if self.mode != "sim":
             return
         self.open_view()
+        if self.ultrasound:
+            self.running.set(False)
+            self.ink.clear()
+            self.writing = ((q,True) for q in self.passes[self.section.get()])
+            self.status.set("仿真定位到本段起点并扫查 · " + self.section.get())
+            return
         self.view.cam.azimuth = -130
         self.view.cam.elevation = -10
         self.view.cam.lookat[:] = [0, -.13, .20]
@@ -124,9 +143,9 @@ class Panel:
     def open_view(self):
         if self.view is None or not self.view.is_running():
             self.view = viewer.launch_passive(self.model, self.data)
-            self.view.cam.lookat[:] = [0, 0, .16]
-            self.view.cam.distance = .72
-            self.view.cam.azimuth = 20
+            self.view.cam.lookat[:] = [.25,.25,.14] if self.ultrasound else [0, 0, .16]
+            self.view.cam.distance = 1.12 if self.ultrasound else .72
+            self.view.cam.azimuth = 120 if self.ultrasound else 20
             self.view.cam.elevation = -17
 
     def connect(self):
@@ -192,8 +211,8 @@ class Panel:
                 self.play.state(["!disabled"])
                 for (scale, _), angle in zip(self.rows, np.degrees(self.q)):
                     scale.state(["!disabled"])
-                    scale.set(float(angle))
-                self.status.set("数字 8 已写完 · 笔尖已抬起")
+                    scale.set(float((angle+180)%360-180))
+                self.status.set("本段扫查结束 · 可选择其他截面区间" if self.ultrasound else "数字 8 已写完 · 笔尖已抬起")
         elif self.mode == "sim":
             t = time.monotonic() - self.t0
             self.q = np.radians([28,18,25,20,18,40]) * np.sin(t*np.array([.6,.42,.55,.73,.8,.95]))
@@ -203,13 +222,26 @@ class Panel:
                 scale.set(float(np.clip(angle, -180, 180)))
             label.configure(text=f"{angle: .1f}°")
         xyz, rpy = update_pose(self.model, self.data, self.q, 0, 1)
-        self.pose.set("XYZ (mm)   " + "   ".join(f"{v:.2f}" for v in xyz) +
+        if self.ultrasound:
+            site = self.data.site("acoustic")
+            xyz = site.xpos * 1000
+            rpy = Rotation.from_matrix(site.xmat.reshape(3,3)).as_euler("xyz",degrees=True)
+        self.pose.set(("探头中心 XYZ (mm)   " if self.ultrasound else "XYZ (mm)   ") + "   ".join(f"{v:.2f}" for v in xyz) +
                       "\nRPY (°)       " + "   ".join(f"{v:.2f}" for v in rpy))
         if ink:
-            self.ink.append(self.data.site("pen_tip").xpos.copy())
+            self.ink.append(self.data.site("acoustic" if self.ultrasound else "pen_tip").xpos.copy())
         if self.view and self.view.is_running():
             with self.view.lock():
-                draw_ink(self.view.user_scn, self.ink)
+                scene = self.view.user_scn
+                draw_ink(scene, self.ink)
+                if self.ultrasound and ink and scene.ngeom < scene.maxgeom:
+                    beam = scene.geoms[scene.ngeom]
+                    mujoco.mjv_initGeom(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),
+                                       np.zeros(3),np.eye(3).ravel(),np.array([.1,.9,.65,1],np.float32))
+                    tip = self.data.site("acoustic")
+                    stop = tip.xpos + .025*tip.xmat.reshape(3,3)[:,2]
+                    mujoco.mjv_makeConnector(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,.0015,*tip.xpos,*stop)
+                    scene.ngeom += 1
             self.view.sync()
         self.root.after(40, self.tick)
 
@@ -224,6 +256,9 @@ class Panel:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--writing", action="store_true", help="Open the previous Assembly 4 writing scene")
+    args = parser.parse_args()
     window = tk.Tk()
-    Panel(window)
+    Panel(window, ultrasound=not args.writing)
     window.mainloop()
