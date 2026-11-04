@@ -5,7 +5,7 @@ from threading import Event, Thread
 import time
 import argparse
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, font
 
 import mujoco
 from mujoco import viewer
@@ -15,6 +15,7 @@ from serial.tools.list_ports import comports
 
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
+from arm5_motion import motion_frames
 from arm5_guides import guides, draw_coordinates
 from arm5_scan import AXES, CENTER, ROOT, Workspace, load_passes, parallel_sections, surface_runs, surface_start
 from arm4_twin import read_positions, update_pose
@@ -56,16 +57,30 @@ class Panel:
         self.running = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="仿真模式 · 可拖动关节或播放演示")
         self.pose = tk.StringVar()
-        outer = ttk.Frame(root, padding=14)
+        for name in ("TkDefaultFont","TkTextFont","TkMenuFont"):
+            font.nametofont(name).configure(family="Microsoft YaHei UI",size=13)
+        style = ttk.Style(root)
+        style.configure(".",font=("Microsoft YaHei UI",13))
+        root.option_add("*TCombobox*Listbox.font",("Microsoft YaHei UI",13))
+        self.cancel_plan = Event()
+        outer = ttk.Frame(root, padding=8)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text=("装配体 5   /   倒挂超声扫查" if ultrasound else "装配体 4   /   六轴操作面板"), font=("Microsoft YaHei UI", 14)).pack(anchor="w")
+        ttk.Label(outer, text=("装配体 5   /   倒挂超声扫查" if ultrasound else "装配体 4   /   六轴操作面板"), font=("Microsoft YaHei UI", 17)).pack(anchor="w")
         bar = ttk.Frame(outer)
         bar.pack(fill="x", pady=8)
         self.connect_btn = ttk.Button(bar, text="连接硬件跟随", command=self.connect)
         self.connect_btn.pack(side="left")
         ttk.Button(bar, text="断开并切回仿真", command=self.simulation).pack(side="left", padx=5)
         ttk.Button(bar, text="打开三维视图", command=self.open_view).pack(side="left")
-        self.settings = ttk.LabelFrame(outer, text="CAN 连接与标定", padding=8)
+        tabs = ttk.Notebook(outer)
+        tabs.pack(fill="both",expand=True)
+        controls = ttk.Frame(tabs,padding=4)
+        hardware = ttk.Frame(tabs,padding=4)
+        joints = ttk.Frame(tabs,padding=4)
+        tabs.add(controls,text="扫查操作" if ultrasound else "写字操作")
+        tabs.add(joints,text="六轴角度")
+        tabs.add(hardware,text="CAN 设置")
+        self.settings = ttk.LabelFrame(hardware, text="CAN 连接与标定", padding=8)
         self.settings.pack(fill="x")
         self.fields = {}
         defaults = [("接口", "u2can"), ("端口", ""), ("通信速率", "921600"),
@@ -82,11 +97,11 @@ class Panel:
         ttk.Button(self.settings, text="刷新端口", command=self.refresh).grid(row=1, column=2, padx=4)
         self.refresh()
         ttk.Label(outer, textvariable=self.status, wraplength=500).pack(anchor="w", pady=6)
-        self.play = ttk.Checkbutton(outer, text="播放仿真演示", variable=self.running)
+        self.play = ttk.Checkbutton(controls, text="播放仿真演示", variable=self.running)
         if not ultrasound:
             self.play.pack(anchor="w")
         else:
-            self.section = ttk.Combobox(outer, values=list(self.passes), state="readonly", width=30)
+            self.section = ttk.Combobox(controls, values=list(self.passes), state="readonly", width=30)
             self.section.current(next(i for i,k in enumerate(self.passes) if k.startswith("Y=250")))
             self.section.pack(anchor="w")
             self.slice_axis = 1
@@ -94,7 +109,7 @@ class Panel:
             self.spacing = tk.StringVar(value="2")
             self.slice_label = tk.StringVar()
             self.show_guides = tk.BooleanVar(value=True)
-            tools = ttk.LabelFrame(outer,text="盒坐标系 · 等距断面",padding=5)
+            tools = ttk.LabelFrame(controls,text="盒坐标系 · 等距断面",padding=5)
             tools.pack(fill="x")
             for col,(name,action) in enumerate((
                     ("XZ 断面",lambda:self.select_slice(1)),("YZ 断面",lambda:self.select_slice(0)),
@@ -116,14 +131,19 @@ class Panel:
                 ttk.Label(fields,text=label).grid(row=0,column=2*i)
                 ttk.Entry(fields,textvariable=var,width=5).grid(row=0,column=2*i+1)
             ttk.Button(tools,text="贴合起点 (mm)",command=self.apply_start).grid(row=4,column=0,columnspan=2)
+            self.arc_angles = [90.,90.]
+            self.lateral_slider = ttk.Scale(tools,command=self.slide_start)
+            self.lateral_slider.grid(row=5,column=1,columnspan=2,sticky="ew")
+            ttk.Button(tools,text="← 起点",command=lambda:self.nudge_start(-1)).grid(row=5,column=0)
+            ttk.Button(tools,text="起点 →",command=lambda:self.nudge_start(1)).grid(row=5,column=3)
             self.select_slice(1)
-            self.multi_btn = ttk.Button(outer, text="按当前探头角度 · 扫多个切面", command=self.start_parallel)
+            self.multi_btn = ttk.Button(controls, text="按当前探头角度 · 扫多个切面", command=self.start_parallel)
             self.multi_btn.pack(anchor="w")
-        self.write_btn = ttk.Button(outer, text="仿真扫描所选截面区间" if ultrasound else "仿真写 8", command=self.start_task)
+        self.write_btn = ttk.Button(controls, text="仿真扫描所选截面区间" if ultrasound else "仿真写 8", command=self.start_task)
         self.write_btn.pack(anchor="w")
         self.rows = []
         for i in range(6):
-            row = ttk.Frame(outer)
+            row = ttk.Frame(joints)
             row.pack(fill="x")
             ttk.Label(row, text=f"J{i+1}").pack(side="left")
             control = ttk.Scale(row, from_=-180, to=180, length=290)
@@ -134,7 +154,14 @@ class Panel:
             self.rows.append((control, val))
         ttk.Label(outer, textvariable=self.pose).pack(anchor="w", pady=6)
         if ultrasound:
-            for (slider,_),q in zip(self.rows,np.degrees(self.passes[self.section.get()][0])):
+            # Start near the marked apex using an already screened central-slice pose.
+            central = self.passes[self.section.get()]
+            def apex_distance(q):
+                self.data.qpos[:] = q
+                mujoco.mj_kinematics(self.model,self.data)
+                return np.linalg.norm(self.data.site("acoustic").xpos-self.start_mm/1000)
+            home = min(central,key=apex_distance)
+            for (slider,_),q in zip(self.rows,np.degrees(home)):
                 slider.set(float((q+180)%360-180))
         self.t0 = time.monotonic()
         self.open_view()
@@ -144,10 +171,34 @@ class Panel:
     def select_slice(self, axis):
         self.slice_axis = axis
         label, coordinate = ("YZ", "X") if axis == 0 else ("XZ", "Y")
-        if hasattr(self,"coords"):
-            self.coords[axis].set(f"{self.position_mm[axis]:g}")
-            self.apply_start()
+        self.set_arc(self.arc_angles[axis])
         self.slice_label.set(f"{label} 断面   {coordinate} = {self.position_mm[axis]:g} mm")
+
+    def set_arc(self, angle):
+        axis = self.slice_axis
+        fixed = (self.position_mm[axis]/1000-CENTER[axis])/AXES[axis]
+        scale = np.sqrt(max(0.,1-fixed**2))
+        reach = AXES[1-axis]*scale*1000
+        center = CENTER[1-axis]*1000
+        point = CENTER.copy()*1000
+        point[axis] = self.position_mm[axis]
+        point[1-axis] += reach*np.cos(np.radians(angle))
+        point[2] += AXES[2]*scale*1000*np.sin(np.radians(angle))
+        self.arc_angles[axis] = angle
+        self.start_mm = point
+        for var,value in zip(self.coords,point):
+            var.set(f"{value:.5f}")
+        self.lateral_slider.configure(from_=center-reach,to=center+reach,command="")
+        self.lateral_slider.set(point[1-axis])
+        self.lateral_slider.configure(command=self.slide_start)
+
+    def slide_start(self, value):
+        lo,hi = (float(self.lateral_slider.cget(k)) for k in ("from","to"))
+        angle = np.degrees(np.arccos(np.clip((2*float(value)-lo-hi)/(hi-lo),-1,1)))
+        self.set_arc(angle)
+
+    def nudge_start(self, sign):
+        self.slide_start(self.lateral_slider.get()+sign*float(self.spacing.get()))
 
     def shift_slice(self, sign):
         axis = self.slice_axis
@@ -166,25 +217,62 @@ class Panel:
             return None
         self.start_mm = point
         self.position_mm[self.slice_axis] = point[self.slice_axis]
-        for var,value in zip(self.coords,point):
-            var.set(f"{value:.4f}".rstrip("0").rstrip(".") or "0")
+        self.set_arc(angle)
         self.slice_label.set(f"{('YZ','XZ')[self.slice_axis]} 断面   {'XY'[self.slice_axis]} = {point[self.slice_axis]:g} mm")
         self.status.set("绿色标记为曲面起点 · 扫描时检查可达性")
         return angle
 
-    def selected_frames(self,axis,position,angle,left,right,offsets):
+    def selected_runs(self,axis,position,angle,left,right,offsets,initial,cancel):
         work = Workspace(self.model)
-        completed = 0
         for offset in offsets:
-            seen = False
-            for poses in surface_runs(work,axis,position+offset,angle,left,right,self.q.copy()):
-                seen = True
+            if cancel.is_set():
+                return
+            for poses in surface_runs(work,axis,position+offset,angle,left,right,initial):
+                if cancel.is_set():
+                    return
+                yield f"{'XY'[axis]} = {position+offset:g} mm", poses
+                initial = poses[-1]
+
+    def play_plan(self, make_runs):
+        self.cancel_plan.set()
+        cancel = self.cancel_plan = Event()
+        queue = SimpleQueue()
+        initial = self.q.copy()
+        def solve():
+            try:
+                for label,poses in make_runs(initial,cancel):
+                    if cancel.is_set():
+                        return
+                    if len(poses):
+                        queue.put((label,poses))
+                queue.put((None,None))
+            except Exception as exc:
+                queue.put((str(exc),None))
+        Thread(target=solve,daemon=True).start()
+        self.finished_message = None
+        self.status.set("正在后台求解 · 等待可达轨迹")
+        def playback():
+            current = initial
+            count = 0
+            while True:
+                try:
+                    label,poses = queue.get_nowait()
+                except Empty:
+                    yield current,False
+                    continue
+                if poses is None:
+                    self.finished_message = ("求解失败 · "+label if label else f"扫描结束 · 已播放 {count} 个可达段")
+                    return
                 self.ink.append(None)
-                self.status.set(f"仿真扫查 · {'XY'[axis]} = {position+offset:g} mm · 分段定位")
-                for q in poses:
-                    yield q, True
-            completed += int(seen)
-        self.finished_message = f"有可达采样点的断面 {completed}/{len(offsets)} · 已播放各可达段"
+                self.status.set("仿真转位 · "+label)
+                path = np.unwrap(np.vstack([current,poses]),axis=0)
+                for current in motion_frames(path[:2]):
+                    yield current,False
+                self.status.set("贴面扫描 · "+label)
+                for current in motion_frames(path[1:]):
+                    yield current,True
+                count += 1
+        self.writing = playback()
 
     def start_selected(self, multiple):
         if self.mode != "sim":
@@ -204,7 +292,9 @@ class Panel:
         self.ink.clear()
         self.open_view()
         self.running.set(False)
-        self.writing = self.selected_frames(self.slice_axis,self.position_mm[self.slice_axis],angle,left,right,offsets)
+        axis = self.slice_axis
+        position = self.position_mm[axis]
+        self.play_plan(lambda initial,cancel:self.selected_runs(axis,position,angle,left,right,offsets,initial,cancel))
 
     def start_parallel(self):
         if self.mode != "sim":
@@ -212,20 +302,12 @@ class Panel:
         self.open_view()
         self.ink.clear()
         self.running.set(False)
-        self.writing = self.parallel_frames(self.q.copy())
-
-    def parallel_frames(self, captured, plane=None, offsets=(0,2,4,6,8,-2,-4,-6,-8)):
-        completed = 0
-        for offset, poses in parallel_sections(self.model, captured, plane=plane, offsets=offsets):
-            if not poses:
-                continue
-            completed += 1
-            self.ink.append(None)
-            location = f"相对当前截面 {offset:+g} mm" if plane is None else f"{'XY'[plane[0]]} = {plane[1]+offset:g} mm"
-            self.status.set(f"仿真分段扫查 · 第 {completed} 面 · {location}")
-            for q in poses:
-                yield q, True
-        self.finished_message = f"多切面扫查结束 · 已扫 {completed}/{len(offsets)} 面"
+        def runs(initial,cancel):
+            for offset,poses in parallel_sections(self.model,initial):
+                if cancel.is_set():
+                    return
+                yield f"相对当前截面 {offset:+g} mm",poses
+        self.play_plan(runs)
 
     def start_task(self):
         if self.mode != "sim":
@@ -234,7 +316,8 @@ class Panel:
         if self.ultrasound:
             self.running.set(False)
             self.ink.clear()
-            self.writing = ((q,True) for q in self.passes[self.section.get()])
+            label = self.section.get()
+            self.play_plan(lambda initial,cancel: [(label,self.passes[label])])
             self.status.set("仿真定位到本段起点并扫查 · " + self.section.get())
             return
         self.view.cam.azimuth = -130
@@ -263,8 +346,8 @@ class Panel:
             self.view = viewer.launch_passive(self.model, self.data)
             self.view.cam.lookat[:] = [.25,.25,.14] if self.ultrasound else [0, 0, .16]
             self.view.cam.distance = 1.12 if self.ultrasound else .72
-            self.view.cam.azimuth = 120 if self.ultrasound else 20
-            self.view.cam.elevation = -17
+            self.view.cam.azimuth = -82 if self.ultrasound else 20
+            self.view.cam.elevation = -21
 
     def connect(self):
         if self.worker is not None:
@@ -283,6 +366,7 @@ class Panel:
             return
         self.writing = None
         self.ink.clear()
+        self.cancel_plan.set()
         self.mode = "hardware"
         self.running.set(False)
         self.status.set("连接中 · 等待六轴有效反馈")
@@ -294,6 +378,7 @@ class Panel:
         self.worker.start()
 
     def simulation(self):
+        self.cancel_plan.set()
         self.stop.set()
         self.writing = None
         self.mode = "sim"
@@ -355,7 +440,9 @@ class Panel:
             local = base.xmat.reshape(3,3).T @ (site.xpos-base.xpos) * 1000
             self.pose.set(self.pose.get()+"\n基座 XYZ (mm)   "+"   ".join(f"{v:.2f}" for v in local))
         if ink:
-            self.ink.append(self.data.site("acoustic" if self.ultrasound else "pen_tip").xpos.copy())
+            point = self.data.site("acoustic" if self.ultrasound else "pen_tip").xpos.copy()
+            if not self.ink or self.ink[-1] is None or np.linalg.norm(point-self.ink[-1]) >= .0008:
+                self.ink.append(point)
         if self.view and self.view.is_running():
             with self.view.lock():
                 scene = self.view.user_scn
@@ -372,9 +459,10 @@ class Panel:
                     mujoco.mjv_makeConnector(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,.0015,*tip.xpos,*stop)
                     scene.ngeom += 1
             self.view.sync()
-        self.root.after(40, self.tick)
+        self.root.after(25 if self.ultrasound else 40, self.tick)
 
     def close(self):
+        self.cancel_plan.set()
         self.stop.set()
         if self.worker and self.worker.is_alive():
             self.root.after(50, self.close)
