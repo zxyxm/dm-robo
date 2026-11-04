@@ -235,7 +235,7 @@ if __name__ == "__main__":
     solve()
     build_passes()
 
-def parallel_sections(model, initial_q):
+def parallel_sections(model, initial_q, *, plane=None, offsets=(0, 2, 4, 6, 8, -2, -4, -6, -8)):
     """Yield (offset_mm, poses) for nine planes parallel to the captured acoustic plane."""
     work = Workspace(model)
     data = work.d
@@ -244,6 +244,10 @@ def parallel_sections(model, initial_q):
     site = data.site("acoustic")
     normal = site.xmat.reshape(3, 3)[:, 1].copy()
     distance = (site.xpos - CENTER) @ normal
+    if plane is not None:
+        axis, position_mm = plane
+        normal = np.eye(3)[axis]
+        distance = position_mm / 1000 - CENTER[axis]
     # Transform to the unit sphere, where every plane cuts a circle.
     scaled = AXES * normal
     length = np.linalg.norm(scaled)
@@ -255,7 +259,7 @@ def parallel_sections(model, initial_q):
     vertical /= np.linalg.norm(vertical)
     across = np.cross(pole, vertical)
     previous = np.array(initial_q)
-    for offset in (0, 2, 4, 6, 8, -2, -4, -6, -8):
+    for offset in offsets:
         level = (distance + offset / 1000) / length
         runs = []
         run = []

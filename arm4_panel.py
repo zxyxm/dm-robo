@@ -15,7 +15,8 @@ from serial.tools.list_ports import comports
 
 from arm4_writing import pen_trajectory, draw_ink
 from arm4_fk import load_model
-from arm5_scan import ROOT, load_passes, parallel_sections
+from arm5_guides import guides, draw_coordinates
+from arm5_scan import AXES, CENTER, ROOT, load_passes, parallel_sections
 from arm4_twin import read_positions, update_pose
 from dm_debug import CanBus, Joint, U2Can, ids
 
@@ -88,6 +89,26 @@ class Panel:
             self.section = ttk.Combobox(outer, values=list(self.passes), state="readonly", width=30)
             self.section.current(next(i for i,k in enumerate(self.passes) if k.startswith("Y=250")))
             self.section.pack(anchor="w")
+            self.slice_axis = 1
+            self.position_mm = [250.,250.]
+            self.spacing = tk.StringVar(value="2")
+            self.slice_label = tk.StringVar()
+            self.show_guides = tk.BooleanVar(value=True)
+            tools = ttk.LabelFrame(outer,text="盒坐标系 · 等距断面",padding=5)
+            tools.pack(fill="x")
+            for col,(name,action) in enumerate((
+                    ("XZ 断面",lambda:self.select_slice(1)),("YZ 断面",lambda:self.select_slice(0)),
+                    ("上一面 −",lambda:self.shift_slice(-1)),("下一面 +",lambda:self.shift_slice(1)))):
+                ttk.Button(tools,text=name,command=action).grid(row=0,column=col)
+            ttk.Label(tools,text="间距 (mm)").grid(row=1,column=0)
+            ttk.Combobox(tools,textvariable=self.spacing,values=("1","2","5","10"),state="readonly",width=5).grid(row=1,column=1)
+            self.chosen_btn = ttk.Button(tools,text="扫选中面",command=lambda:self.start_selected(False))
+            self.chosen_btn.grid(row=1,column=2)
+            self.grid_btn = ttk.Button(tools,text="扫等距多面",command=lambda:self.start_selected(True))
+            self.grid_btn.grid(row=1,column=3)
+            ttk.Label(tools,textvariable=self.slice_label).grid(row=2,column=0,columnspan=3,sticky="w")
+            ttk.Checkbutton(tools,text="断面网格",variable=self.show_guides).grid(row=2,column=3)
+            self.select_slice(1)
             self.multi_btn = ttk.Button(outer, text="按当前探头角度 · 扫多个切面", command=self.start_parallel)
             self.multi_btn.pack(anchor="w")
         self.write_btn = ttk.Button(outer, text="仿真扫描所选截面区间" if ultrasound else "仿真写 8", command=self.start_task)
@@ -112,6 +133,30 @@ class Panel:
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.tick()
 
+    def select_slice(self, axis):
+        self.slice_axis = axis
+        label, coordinate = ("YZ", "X") if axis == 0 else ("XZ", "Y")
+        self.slice_label.set(f"{label} 断面   {coordinate} = {self.position_mm[axis]:g} mm")
+
+    def shift_slice(self, sign):
+        axis = self.slice_axis
+        value = self.position_mm[axis] + sign*float(self.spacing.get())
+        if abs(value/1000-CENTER[axis]) >= AXES[axis]-1e-10:
+            self.status.set("已到半椭球边缘，无法再移动一个完整间距")
+            return
+        self.position_mm[axis] = value
+        self.select_slice(axis)
+
+    def start_selected(self, multiple):
+        if self.mode != "sim":
+            return
+        offsets = (0,2,4,6,8,-2,-4,-6,-8) if multiple else (0,)
+        offsets = tuple(v*float(self.spacing.get())/2 for v in offsets)
+        self.ink.clear()
+        self.open_view()
+        self.running.set(False)
+        self.writing = self.parallel_frames(self.q.copy(), (self.slice_axis,self.position_mm[self.slice_axis]), offsets)
+
     def start_parallel(self):
         if self.mode != "sim":
             return
@@ -120,17 +165,18 @@ class Panel:
         self.running.set(False)
         self.writing = self.parallel_frames(self.q.copy())
 
-    def parallel_frames(self, captured):
+    def parallel_frames(self, captured, plane=None, offsets=(0,2,4,6,8,-2,-4,-6,-8)):
         completed = 0
-        for offset, poses in parallel_sections(self.model, captured):
+        for offset, poses in parallel_sections(self.model, captured, plane=plane, offsets=offsets):
             if not poses:
                 continue
             completed += 1
             self.ink.append(None)
-            self.status.set(f"仿真分段扫查 · 第 {completed} 面 · 相对当前截面 {offset:+d} mm")
+            location = f"相对当前截面 {offset:+g} mm" if plane is None else f"{'XY'[plane[0]]} = {plane[1]+offset:g} mm"
+            self.status.set(f"仿真分段扫查 · 第 {completed} 面 · {location}")
             for q in poses:
                 yield q, True
-        self.finished_message = f"多切面扫查结束 · 已扫 {completed}/9 面，其他面未找到连续可行段"
+        self.finished_message = f"多切面扫查结束 · 已扫 {completed}/{len(offsets)} 面"
 
     def start_task(self):
         if self.mode != "sim":
@@ -223,7 +269,8 @@ class Panel:
                     self.status.set("硬件跟随 · 六轴反馈正常（只读）")
         self.write_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
         if self.ultrasound:
-            self.multi_btn.state(["!disabled" if self.mode == "sim" else "disabled"])
+            for button in (self.multi_btn,self.chosen_btn,self.grid_btn):
+                button.state(["!disabled" if self.mode == "sim" else "disabled"])
         ink = False
         manual = self.mode == "sim" and not self.running.get() and self.writing is None
         if manual:
@@ -260,6 +307,9 @@ class Panel:
             with self.view.lock():
                 scene = self.view.user_scn
                 draw_ink(scene, self.ink, radius=.00045 if self.ultrasound else .001)
+                if self.ultrasound:
+                    lines = guides(self.slice_axis, self.position_mm[self.slice_axis],float(self.spacing.get())) if self.show_guides.get() else ()
+                    draw_coordinates(scene, lines)
                 if self.ultrasound and ink and scene.ngeom < scene.maxgeom:
                     beam = scene.geoms[scene.ngeom]
                     mujoco.mjv_initGeom(beam,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),
