@@ -2,6 +2,7 @@
 <mujoco model="Assembly 4 - kinematic linkage">
   <compiler angle="radian" />
   <asset>
+    <texture name="studio_background" type="skybox" builtin="flat" rgb1=".863 .890 .910" width="64" height="384" />
     <material name="al5052" rgba=".72 .75 .78 1" />
     <material name="carbon_laminate" rgba=".13 .14 .15 1" />
     <mesh name="bracket1" file="meshes/bracket1.stl" />
