@@ -1,0 +1,16 @@
+{
+  "A": {
+    "valid": true,
+    "solid_count": 1,
+    "minimum_probe_clearance_mm": 0.6693443829265889,
+    "stl_triangles": 554,
+    "nonmanifold_edges": 0
+  },
+  "B": {
+    "valid": true,
+    "solid_count": 1,
+    "minimum_probe_clearance_mm": 0.5803951923207153,
+    "stl_triangles": 560,
+    "nonmanifold_edges": 0
+  }
+}

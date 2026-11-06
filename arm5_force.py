@@ -20,11 +20,11 @@ def estimate_force(linear, gravity, torque, bias):
     return force
 
 
-def contact(point):
-    unit = (point-CENTER)/AXES
-    gradient = unit/AXES
+def contact(point,radii=AXES,center=CENTER):
+    unit = (point-center)/radii
+    gradient = unit/radii
     length = np.linalg.norm(gradient)
-    if point[2] < 0 or length < 1e-8:
+    if point[2] < center[2] or length < 1e-8:
         return np.zeros(3),0.
     # Local signed distance from the ellipsoid implicit surface, linearized at TCP.
     depth = max(0., (1-unit@unit)/(2*length))
@@ -39,7 +39,8 @@ class ProbeControl:
     def correct(self,model,data,nominal,target,dt):
         data.qpos[:] = nominal
         mujoco.mj_forward(model,data)
-        normal,_ = contact(data.site("acoustic").xpos)
+        radii = AXES * model.mesh_scale[model.mesh("phantom").id]
+        normal,_ = contact(data.site("acoustic").xpos,radii,model.site("phantom_center").pos)
         speed = np.clip(.0015*(target-self.previous_force),-.003,.003)
         self.offset = np.clip(self.offset+speed*dt,0.,.004)
         goal = data.site("acoustic").xpos.copy()-normal*self.offset
@@ -50,5 +51,5 @@ class ProbeControl:
             delta = jac.T @ np.linalg.solve(jac@jac.T + 1e-6*np.eye(6),error)
             data.qpos[:] += np.clip(delta,-.005,.005)
             mujoco.mj_forward(model,data)
-        _,self.previous_force = contact(data.site("acoustic").xpos)
+        _,self.previous_force = contact(data.site("acoustic").xpos,radii,model.site("phantom_center").pos)
         return data.qpos.copy()

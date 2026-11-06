@@ -7,30 +7,47 @@ import numpy as np
 from arm5_scan import AXES, CENTER
 
 
+# Fixed top corner in MuJoCo world coordinates (metres).
+BOX_ORIGIN = np.array([0., .5, .3])
+
+
+def box_mm(world):
+    return (np.asarray(world)-BOX_ORIGIN)*1000
+
+
 @lru_cache(maxsize=64)
-def guides(axis, position):
+def guides(axis, position, radii=tuple(AXES),center=tuple(CENTER)):
     offset = position/1000 - CENTER[axis]
-    if abs(offset) >= AXES[axis]:
+    if abs(offset) >= radii[axis]:
         return []
-    scale = np.sqrt(1-(offset/AXES[axis])**2)
+    scale = np.sqrt(1-(offset/radii[axis])**2)
     angle = np.linspace(0, np.pi, 65)
-    points = np.tile(CENTER,(len(angle),1))
+    points = np.tile(center,(len(angle),1))
     points[:,axis] += offset
-    points[:,1-axis] += AXES[1-axis]*scale*np.cos(angle)
-    points[:,2] += AXES[2]*scale*np.sin(angle) + .0003
+    points[:,1-axis] += radii[1-axis]*scale*np.cos(angle)
+    points[:,2] += radii[2]*scale*np.sin(angle) + .0003
     return [(a,b,.00062,[.95,.32,.04,1]) for a,b in zip(points,points[1:])]
 
 
-def draw_coordinates(scene, lines, base=None, start=None):
+def draw_coordinates(scene, lines, base=None, start=None, flange=None):
     def geom(kind, pos, color):
         g = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(g,kind,np.zeros(3),pos,np.eye(3).ravel(),np.asarray(color,np.float32))
         scene.ngeom += 1
         return g
 
-    frames = [(np.zeros(3), np.eye(3), "+", .085)]
+    frames = [(BOX_ORIGIN, np.eye(3), "+", .085)]
     if base is not None:
         frames.append((base.xpos, base.xmat.reshape(3,3), "B", .065))
+    if flange is not None:
+        frames.append((flange.xpos, flange.xmat.reshape(3,3), "T", .080))
+        # Parallel reference beside the tool, visible even in the close-up view.
+        origin = flange.xpos + np.array([0.,0.,.095])
+        end = origin + np.array([.065,0.,0.])
+        if scene.ngeom+2 <= scene.maxgeom:
+            ref = geom(mujoco.mjtGeom.mjGEOM_ARROW,origin,[1.,.53,.05,1])
+            mujoco.mjv_makeConnector(ref,mujoco.mjtGeom.mjGEOM_ARROW,.0025,*origin,*end)
+            geom(mujoco.mjtGeom.mjGEOM_LABEL,end+[.013,0.,0.],[1.,.53,.05,1]).label = "World +X"
     for origin, rotation, prefix, length in frames:
         for direction, color, label in zip(rotation.T, ([.88,.08,.06,1],[.05,.65,.16,1],[.12,.34,.95,1]), "XYZ"):
             if scene.ngeom+2 > scene.maxgeom:

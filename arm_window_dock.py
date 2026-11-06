@@ -29,6 +29,8 @@ dpi = api(user, "SetThreadDpiAwarenessContext", wt.HANDLE, wt.HANDLE)
 minimized = api(user, "IsIconic", wt.BOOL, wt.HWND)
 maximized = api(user, "IsZoomed", wt.BOOL, wt.HWND)
 show = api(user, "ShowWindow", wt.BOOL, wt.HWND, ct.c_int)
+set_title = api(user,"SetWindowTextW",wt.BOOL,wt.HWND,wt.LPCWSTR)
+message = api(user,"SendMessageW",ct.c_ssize_t,wt.HWND,wt.UINT,wt.WPARAM,wt.LPARAM)
 
 
 def viewer_window():
@@ -58,13 +60,19 @@ def place(hwnd, outer, frame, x, y, w, h):
              h+outer.bottom-outer.top-frame.bottom+frame.top, 0x14)  # no focus or z-order change
 
 
-def dock(root):
+def dock(root, title=None):
     viewer = viewer_window()
     if not viewer or minimized(viewer) or not root.winfo_ismapped():
         return
     panel = ancestor(root.winfo_id(), 2)
     if not panel or minimized(panel):
         return
+    if title:
+        set_title(viewer,title)
+        for size in (0,1):
+            icon = message(panel,0x7F,size,0)  # WM_GETICON
+            if icon:
+                message(viewer,0x80,size,icon)  # WM_SETICON
     previous = dpi(-4)  # DWM reports physical pixels, including on scaled monitors.
     try:
         info = MonitorInfo(size=ct.sizeof(MonitorInfo))
@@ -80,11 +88,10 @@ def dock(root):
         available = area.right-area.left-width
         vw = available if maxim else min(frame.right-frame.left, available)
         vh = area.bottom-area.top if maxim else min(frame.bottom-frame.top, area.bottom-area.top)
-        ph = min(pf.bottom-pf.top,area.bottom-area.top)
         x = area.left if maxim else max(area.left,min(frame.left,area.right-width-vw))
-        y = area.top if maxim else max(area.top,min(frame.top,area.bottom-max(vh,ph)))
+        y = area.top if maxim else max(area.top,min(frame.top,area.bottom-vh))
         place(viewer,outer,frame,x,y,vw,vh)
-        place(panel,po,pf,x+vw,y,width,ph)
+        place(panel,po,pf,x+vw,y,width,vh)
     finally:
         if previous:
             dpi(previous)

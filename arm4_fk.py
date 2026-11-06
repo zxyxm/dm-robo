@@ -10,9 +10,23 @@ from scipy.spatial.transform import Rotation
 MODEL = Path(__file__).with_name("arm4.xml")
 
 
-def load_model(path=MODEL):
+def load_model(path=MODEL, *, phantom_scale=None, box_height=.3, mount_xy=None):
     xml = path.read_text(encoding="utf-8")
-    meshes = ET.fromstring(xml).findall("./asset/mesh")
+    tree = ET.fromstring(xml)
+    if phantom_scale is not None:
+        tree.find("./asset/mesh[@name='phantom']").set("scale", " ".join(map(str,phantom_scale)))
+    if box_height != .3:
+        floor = .3-box_height
+        for edge in tree.findall("./worldbody/geom[@fromto]"):
+            ends = np.fromstring(edge.get("fromto"),sep=" ").reshape(2,3)
+            ends[ends[:,2]==0,2] = floor
+            edge.set("fromto"," ".join(map(str,ends.ravel())))
+        for tag in ("geom[@name='phantom']", "site[@name='phantom_center']"):
+            tree.find("./worldbody/"+tag).set("pos",f".25 .25 {floor}")
+    if mount_xy is not None:
+        tree.find("./worldbody/body[@name='mount']").set("pos",f"{mount_xy[0]} {mount_xy[1]} .3")
+    xml = ET.tostring(tree,encoding="unicode")
+    meshes = tree.findall("./asset/mesh")
     assets = {Path(m.get("file")).name: (path.parent / m.get("file")).read_bytes() for m in meshes}
     return mujoco.MjModel.from_xml_string(xml, assets=assets)
 

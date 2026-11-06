@@ -27,7 +27,7 @@
   <worldbody>
     <light directional="true" pos=".4 -.4 .8" dir="-.5 .4 -.8" diffuse=".32 .31 .30" specular=".35 .34 .33" castshadow="false" />
     <light directional="true" pos="-.4 .65 .4" dir=".4 -.8 -.45" diffuse=".20 .21 .23" specular=".16 .18 .20" castshadow="false" />
-    <body name="mount" pos=".16 .34 .30" quat="0 0 1 0">
+    <body name="mount" pos=".20 .40 .30" quat="0 0 1 0">
       <geom name="fixed_adapter" type="mesh" mesh="base6061" material="al5052" />
       <body name="link1" pos="-1.41398004416e-15 -1.01607611214e-15 0.0665">
         <joint name="J1" type="hinge" axis="-1.5642807763e-16 -7.80232566933e-31 -1" />
@@ -86,6 +86,7 @@
     <geom type="capsule" fromto="0 0.5 0 0 0.5 0.3" size=".0015" rgba=".24 .4 .54 .65" contype="0" conaffinity="0" />
     <geom type="capsule" fromto="0.5 0 0 0.5 0 0.3" size=".0015" rgba=".24 .4 .54 .65" contype="0" conaffinity="0" />
     <geom type="capsule" fromto="0.5 0.5 0 0.5 0.5 0.3" size=".0015" rgba=".24 .4 .54 .65" contype="0" conaffinity="0" />
+    <site name="phantom_center" pos=".25 .25 0" size=".0001" rgba="0 0 0 0" />
     <geom name="phantom" type="mesh" mesh="phantom" pos=".25 .25 0" rgba=".82 .48 .40 1" />
   </worldbody>
 </mujoco>

@@ -42,6 +42,29 @@ def hits_unit_sphere(tris):
 
 
 class Workspace:
+    def flange_locked_step(self, previous, step, budget):
+        """Correct wrist tilt after joint interpolation, within the per-axis frame budget."""
+        trial = step.copy()
+        flange = self.d.site("flange")
+        angular = np.empty((3, self.m.nv))
+        for _ in range(8):
+            q = previous + trial
+            for _ in range(4):
+                self.d.qpos[:] = q
+                mujoco.mj_kinematics(self.m, self.d)
+                direction = flange.xmat.reshape(3,3)[:,2]
+                if np.linalg.norm(direction - [1,0,0]) < 1e-6:
+                    if np.all(abs(q-previous) <= budget + 1e-10):
+                        return q
+                    break
+                mujoco.mj_comPos(self.m,self.d)
+                mujoco.mj_jacSite(self.m,self.d,None,angular,flange.id)
+                tilt = np.cross(angular[:,3:5].T,direction).T
+                correction = np.linalg.lstsq(tilt, [1,0,0]-direction, rcond=1e-6)[0]
+                q[3:5] += np.clip(correction,-.05,.05)
+            trial *= .5
+        return previous.copy()
+
     def __init__(self, model):
         self.m = model
         self.d = mujoco.MjData(model)
@@ -74,7 +97,9 @@ class Workspace:
             self.hulls[i] = verts[hull.vertices]
             self.facets[i] = verts[hull.simplices]
         self.probe_cache = {}
-        self.phantom = model.geom("phantom").id
+        self.center = model.site("phantom_center").pos.copy()
+        self.lower = np.array([0.,0.,self.center[2]])-.00001
+        self.radii = AXES * model.mesh_scale[model.mesh("phantom").id]
 
     def solutions(self, target, orientation):
         a = self.axes
@@ -105,22 +130,27 @@ class Workspace:
         site = d.site("acoustic")
         if np.linalg.norm(site.xpos-target) > .0001 or np.linalg.norm(site.xmat.reshape(3,3)-orientation) > .001:
             return False
+        return self.clearance_ok()
+
+    def clearance_ok(self):
+        d = self.d
+        site = d.site("acoustic")
         for i, vertices in self.hulls.items():
             points = vertices @ d.geom_xmat[i].reshape(3,3).T + d.geom_xpos[i]
-            if np.any(points.min(0)<-.00001) or np.any(points.max(0)>[.50001,.50001,.30001]):
+            if np.any(points.min(0)<self.lower) or np.any(points.max(0)>[.50001,.50001,.30001]):
                 return False
             tolerance = .0005 if i == self.m.geom("probe_shell").id else .00001
-            axes = AXES - tolerance
+            axes = self.radii - tolerance
             lo,hi = points.min(0),points.max(0)
-            if np.any(lo > CENTER + axes) or np.any(hi < CENTER - axes):
+            if np.any(lo > self.center + axes) or np.any(hi < self.center - axes):
                 continue
             # Scale the ellipsoid to a unit sphere and test each convex-hull facet.
-            key = tuple(np.round(np.r_[target,orientation.flatten()],8)) if i == self.m.geom("probe_shell").id else None
+            key = tuple(np.round(np.r_[site.xpos,site.xmat],8)) if i == self.m.geom("probe_shell").id else None
             if key in self.probe_cache:
                 if self.probe_cache[key]:
                     return False
                 continue
-            tris = ((self.facets[i] @ d.geom_xmat[i].reshape(3,3).T + d.geom_xpos[i]) - CENTER) / axes
+            tris = ((self.facets[i] @ d.geom_xmat[i].reshape(3,3).T + d.geom_xpos[i]) - self.center) / axes
             collision = hits_unit_sphere(tris)
             if key is not None:
                 self.probe_cache[key] = collision
@@ -243,13 +273,13 @@ def parallel_sections(model, initial_q, *, plane=None, offsets=(0, 2, 4, 6, 8, -
     mujoco.mj_kinematics(model, data)
     site = data.site("acoustic")
     normal = site.xmat.reshape(3, 3)[:, 1].copy()
-    distance = (site.xpos - CENTER) @ normal
+    distance = (site.xpos - work.center) @ normal
     if plane is not None:
         axis, position_mm = plane
         normal = np.eye(3)[axis]
         distance = position_mm / 1000 - CENTER[axis]
     # Transform to the unit sphere, where every plane cuts a circle.
-    scaled = AXES * normal
+    scaled = work.radii * normal
     length = np.linalg.norm(scaled)
     pole = scaled / length
     up = np.array([0., 0., 1.])
@@ -267,13 +297,13 @@ def parallel_sections(model, initial_q, *, plane=None, offsets=(0, 2, 4, 6, 8, -
             for angle in np.deg2rad(np.arange(-90, 270, 2)):
                 circle = np.cos(angle)*across + np.sin(angle)*vertical
                 unit = level*pole + np.sqrt(1-level**2)*circle
-                target = CENTER + AXES*unit
-                inward = -unit / AXES
+                target = work.center + work.radii*unit
+                inward = -unit / work.radii
                 inward -= normal * (normal @ inward)
                 inward /= np.linalg.norm(inward)
                 frame = np.column_stack((np.cross(normal,inward), normal, inward))
                 found = None
-                if target[2] >= 0:
+                if target[2] >= work.center[2]:
                     ref = run[-1] if run else previous
                     choices = []
                     for q in work.solutions(target,frame):
@@ -300,28 +330,28 @@ def parallel_sections(model, initial_q, *, plane=None, offsets=(0, 2, 4, 6, 8, -
         yield offset,best
 
 
-def surface_start(axis, xyz_mm):
+def surface_start(axis, xyz_mm, radii=AXES, center=CENTER):
     """Radially project in normalized slice coordinates, preserving the slice offset."""
     xyz = np.asarray(xyz_mm, dtype=float) / 1000
-    if xyz.shape != (3,) or not np.all(np.isfinite(xyz)) or xyz[2] < 0:
-        raise ValueError("起点需要三个有限坐标，Z 必须大于或等于零")
-    unit = (xyz - CENTER) / AXES
+    if xyz.shape != (3,) or not np.all(np.isfinite(xyz)) or xyz[2] < center[2]-1e-8:
+        raise ValueError("起点需要三个有限坐标，Z 必须位于盒底或以上")
+    unit = (xyz - center) / radii
     if abs(unit[axis]) >= 1:
         raise ValueError("所选断面超出半椭球，或已退化为一点")
     horizontal = 1-axis
     angle = np.arctan2(unit[2], unit[horizontal]) if np.hypot(unit[2],unit[horizontal]) > 1e-12 else np.pi/2
     scale = np.sqrt(1-unit[axis]**2)
     unit[[horizontal,2]] = scale*np.array([np.cos(angle),np.sin(angle)])
-    return (CENTER + AXES*unit)*1000, np.degrees(angle)
+    return (center + radii*unit)*1000, np.degrees(angle)
 
 
-def section_pose(axis,fixed,angle):
+def section_pose(axis,fixed,angle,radii=AXES,center=CENTER):
     lateral = np.eye(3)[axis]
     t = np.radians(angle)
     unit = lateral*fixed
     unit[[1-axis,2]] = np.sqrt(1-fixed**2)*np.array([np.cos(t),np.sin(t)])
-    target = CENTER + AXES*unit
-    beam = -unit/AXES
+    target = center + radii*unit
+    beam = -unit/radii
     beam[axis] = 0
     beam /= np.linalg.norm(beam)
     frame = np.column_stack((np.cross(lateral,beam), lateral, beam))
@@ -330,8 +360,8 @@ def section_pose(axis,fixed,angle):
 
 def surface_runs(work, axis, position, start_angle, left, right, initial, *, connected=False):
     """Two sweeps from the requested start, splitting at gaps and branch changes."""
-    fixed = (position/1000-CENTER[axis])/AXES[axis]
-    if abs(fixed) >= 1:
+    fixed = (position/1000-CENTER[axis])/work.radii[axis]
+    if axis != 0 or abs(fixed) >= 1:
         return
     ends = dict.fromkeys((max(0.,start_angle-right), min(180.,start_angle+left)))
     for end in ends:
@@ -340,15 +370,14 @@ def surface_runs(work, axis, position, start_angle, left, right, initial, *, con
             continue
         run = []
         for angle in np.linspace(start_angle,end,count+1):
-            target,frame = section_pose(axis,fixed,angle)
+            target,frame = section_pose(axis,fixed,angle,work.radii,work.center)
             ref = run[-1] if run else initial
             choices = []
-            for rotation in (frame, frame @ np.diag([-1,-1,1])):
-                for q in work.solutions(target,rotation):
-                    delta = (q-ref+np.pi)%(2*np.pi)-np.pi
-                    choices.append((np.linalg.norm(delta),ref+delta,rotation))
-            found = next((q for _,q,r in sorted(choices,key=lambda item:item[0])
-                          if work.feasible(q,target,r)),None)
+            for q in work.solutions(target,frame):
+                delta = (q-ref+np.pi)%(2*np.pi)-np.pi
+                choices.append((np.linalg.norm(delta),ref+delta))
+            found = next((q for _,q in sorted(choices,key=lambda item:item[0])
+                          if work.feasible(q,target,frame)),None)
             if connected and (found is None or (run and np.max(np.abs(found-ref)) > .35)):
                 break
             if run and (found is None or np.max(np.abs(found-ref)) > .35):
